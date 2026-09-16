@@ -32,6 +32,14 @@ export const discovery = {
           status: login.valid === "true" ? "authenticated" : "unauthenticated",
           account: login.user,
           host: ForgejoCli.parseForgejoRemote(login.url)?.host,
+          // Every tea login, so an account rule can name one of the others. `fj` is left out
+          // deliberately: it holds one credential per host with no user to choose between.
+          accounts: logins.flatMap((entry) => {
+            const host = ForgejoCli.parseForgejoRemote(entry.url)?.host;
+            return host === undefined || entry.user.trim() === ""
+              ? []
+              : [{ login: entry.user, host, active: entry.default === "true" }];
+          }),
         })
       : providerAuth({
           status: "unauthenticated",
