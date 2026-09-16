@@ -109,6 +109,14 @@ export function summariseAccountRules(
   }));
 }
 
+/** How the repository list sums itself up, which differs once every repository is pinned. */
+export function repositoryAccountSummary(pinned: number, total: number): string {
+  const noun = total === 1 ? "repository" : "repositories";
+  if (pinned === 0) return `${total} ${noun}, none pinned by a rule yet.`;
+  if (pinned === total) return `${total} ${noun}, all pinned by a rule.`;
+  return `${pinned} of ${total} ${noun} pinned by a rule; the rest use the active account.`;
+}
+
 export interface AccountRuleEdit {
   readonly pattern: string;
   readonly login: string;

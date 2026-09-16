@@ -21,6 +21,7 @@ import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings"
 import {
   accountRulePatternError,
   knownRepositories,
+  repositoryAccountSummary,
   resolveRepositoryAccounts,
   summariseAccountRules,
   updateAccountRules,
@@ -258,11 +259,7 @@ export function SourceControlAccountRules(props: {
       {repositories.length === 0 ? null : (
         <SettingsRow
           title="Repositories"
-          description={
-            pinnedCount === 0
-              ? `${repositories.length} in this workspace, none pinned yet.`
-              : `${pinnedCount} of ${repositories.length} pinned by a rule; the rest use the active account.`
-          }
+          description={repositoryAccountSummary(pinnedCount, repositories.length)}
           control={
             <Button
               size="icon-xs"

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   accountRulePatternError,
   knownRepositories,
+  repositoryAccountSummary,
   resolveRepositoryAccounts,
   sortAccountRules,
   summariseAccountRules,
@@ -87,6 +88,17 @@ describe("source control account rules", () => {
       ["github.com/acme/*", 1],
       ["github.com/*", 1],
     ]);
+  });
+
+  it("only mentions the unpinned repositories when there are some", () => {
+    expect(repositoryAccountSummary(0, 15)).toBe("15 repositories, none pinned by a rule yet.");
+    expect(repositoryAccountSummary(2, 15)).toBe(
+      "2 of 15 repositories pinned by a rule; the rest use the active account.",
+    );
+    // Nothing is left over once every repository is pinned.
+    expect(repositoryAccountSummary(15, 15)).toBe("15 repositories, all pinned by a rule.");
+    expect(repositoryAccountSummary(1, 1)).toBe("1 repository, all pinned by a rule.");
+    expect(repositoryAccountSummary(0, 1)).toBe("1 repository, none pinned by a rule yet.");
   });
 
   it("renames a rule without leaving the old pattern behind", () => {
