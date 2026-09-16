@@ -12,14 +12,7 @@ import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
 import { Input } from "../ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectPopup,
-  SelectTrigger,
-  SelectValue,
-} from "../ui/select";
+import { Select, SelectContent, SelectItem, SelectPopup, SelectTrigger } from "../ui/select";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
@@ -107,34 +100,46 @@ function RuleRow(props: {
           onChange={(event) => setPattern(event.target.value)}
           onBlur={(event) => commitPattern(event.target.value)}
         />
-        <Select
-          value={props.login}
-          disabled={props.disabled}
-          onValueChange={(value) => {
-            if (typeof value !== "string" || value === props.login) return;
-            props.onSave(
-              updateAccountRules(props.overrides, { pattern: props.pattern, login: value }),
-            );
-          }}
-        >
-          {/* Blurred like every other account on this page; the trigger clears it on focus,
-              since choosing an account means interacting with the control anyway. */}
-          <SelectTrigger size="sm" className="group w-48" aria-label="Account for this pattern">
-            <SelectValue className="select-none font-mono text-[11px] blur-[2px] transition group-hover:blur-none group-focus-visible:blur-none group-data-[popup-open]:blur-none" />
-          </SelectTrigger>
-          <SelectPopup>
-            <SelectContent>
-              {props.accounts.some((account) => account.login === props.login) ? null : (
-                <SelectItem value={props.login}>{props.login}</SelectItem>
-              )}
-              {props.accounts.map((account) => (
-                <SelectItem key={`${account.host}/${account.login}`} value={account.login}>
-                  {account.login}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </SelectPopup>
-        </Select>
+        {/* The account is shown the way every other account on this page is: replaced by a
+            scrambled stand-in and revealed on click. Changing it is a separate control, because
+            a reveal button cannot live inside the select's own button. */}
+        <div className="flex w-44 shrink-0 items-center justify-end gap-1">
+          <RedactedSensitiveText
+            value={props.login}
+            ariaLabel={`Toggle the account for ${props.pattern === "" ? "this rule" : props.pattern}`}
+            revealTooltip="Click to reveal account"
+            hideTooltip="Click to hide account"
+            className="truncate"
+          />
+          <Select
+            value={props.login}
+            disabled={props.disabled}
+            onValueChange={(value) => {
+              if (typeof value !== "string" || value === props.login) return;
+              props.onSave(
+                updateAccountRules(props.overrides, { pattern: props.pattern, login: value }),
+              );
+            }}
+          >
+            <SelectTrigger
+              size="sm"
+              className="w-auto shrink-0 px-1.5"
+              aria-label="Change the account for this rule"
+            />
+            <SelectPopup>
+              <SelectContent>
+                {props.accounts.some((account) => account.login === props.login) ? null : (
+                  <SelectItem value={props.login}>{props.login}</SelectItem>
+                )}
+                {props.accounts.map((account) => (
+                  <SelectItem key={`${account.host}/${account.login}`} value={account.login}>
+                    {account.login}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </SelectPopup>
+          </Select>
+        </div>
         <Button
           size="icon-xs"
           variant="ghost-muted"
