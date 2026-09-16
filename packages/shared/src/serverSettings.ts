@@ -279,6 +279,9 @@ export function applyServerSettingsPatch(
     usagePriceOverrides: usagePriceOverridesPatch,
     // Entry replacement: deepMerge would keep keys the client meant to clear.
     projectSettingsOverrides: projectSettingsOverridesPatch,
+    // Replaced whole for the same reason: a rule is edited by rewriting its pattern, so a
+    // merge would leave the old pattern behind and quietly keep pinning against it.
+    sourceControlAccountOverrides: sourceControlAccountOverridesPatch,
     // Already translated into `projectSettingsOverrides` above; the legacy
     // maps are derived views and must never be merged directly.
     projectAgentBrowserAccessOverrides: _legacyBrowserAccess,
@@ -368,6 +371,9 @@ export function applyServerSettingsPatch(
             ).filter(([, entry]) => Object.keys(entry).length > 0),
           ),
         }
+      : {}),
+    ...(sourceControlAccountOverridesPatch !== undefined
+      ? { sourceControlAccountOverrides: sourceControlAccountOverridesPatch }
       : {}),
     ...(patch.defaultModelSelection !== undefined
       ? { defaultModelSelection: patch.defaultModelSelection }

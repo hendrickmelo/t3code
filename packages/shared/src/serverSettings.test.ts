@@ -51,6 +51,31 @@ describe("serverSettings helpers", () => {
     expect(applyServerSettingsPatch(edited, { deviceHosts: [] }).deviceHosts).toEqual([]);
   });
 
+  it("replaces source control account rules so a renamed or deleted rule stops matching", () => {
+    const saved = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      sourceControlAccountOverrides: { "github.com/acme/*": "work", "github.com/*": "personal" },
+    });
+    expect(saved.sourceControlAccountOverrides).toEqual({
+      "github.com/acme/*": "work",
+      "github.com/*": "personal",
+    });
+    // Renaming a rule must not leave the old pattern behind still pinning repositories.
+    const renamed = applyServerSettingsPatch(saved, {
+      sourceControlAccountOverrides: {
+        "github.com/acme-inc/*": "work",
+        "github.com/*": "personal",
+      },
+    });
+    expect(renamed.sourceControlAccountOverrides).toEqual({
+      "github.com/acme-inc/*": "work",
+      "github.com/*": "personal",
+    });
+    expect(
+      applyServerSettingsPatch(renamed, { sourceControlAccountOverrides: {} })
+        .sourceControlAccountOverrides,
+    ).toEqual({});
+  });
+
   it("inherits actions, preserves existing actions, and supports empty overrides and reset", () => {
     const project = { id: ProjectId.make("project-actions"), scripts: [] };
     const action = {
