@@ -69,6 +69,8 @@ import * as ServerSettings from "../serverSettings.ts";
 import type { GitManagerServiceError } from "@t3tools/contracts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
+import * as SourceControlAccountResolver from "../sourceControl/SourceControlAccountResolver.ts";
+import { withPinnedSourceControlAccount } from "../sourceControl/SourceControlAccount.ts";
 import { detectPrTemplate } from "../sourceControl/PrTemplateDetection.ts";
 import type { ChangeRequest } from "@t3tools/contracts";
 
@@ -703,12 +705,48 @@ export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
-  const sourceControlProvider = (cwd: string) => sourceControlProviders.resolve({ cwd });
   const serverSettingsService = yield* ServerSettings.ServerSettingsService;
   // Optional: git actions also run from the CLI and tests without orchestration.
   const projectionQuery = yield* Effect.serviceOption(
     ProjectionSnapshotQuery.ProjectionSnapshotQuery,
   );
+  const accountResolver = yield* Effect.serviceOption(
+    SourceControlAccountResolver.SourceControlAccountResolver,
+  );
+
+  /**
+   * The provider for a checkout, acting as that repository's pinned account. Without a detected
+   * remote there is no repository to pin to, and the provider runs as the CLI's active account.
+   */
+  const sourceControlProvider = (cwd: string) =>
+    sourceControlProviders.resolveHandle({ cwd }).pipe(
+      Effect.map((handle) => {
+        const remoteUrl = handle.context?.remoteUrl;
+        if (Option.isNone(accountResolver) || remoteUrl === undefined) return handle.provider;
+        const canonicalKey = normalizeGitRemoteUrl(remoteUrl);
+        return withPinnedSourceControlAccount(
+          handle.provider,
+          accountResolver.value
+            .resolve({
+              kind: handle.provider.kind,
+              host: canonicalKey.split("/")[0] ?? "",
+              canonicalKey,
+            })
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new SourceControlProviderError({
+                    provider: handle.provider.kind,
+                    operation: "selectAccount",
+                    cwd,
+                    detail: cause.message,
+                    cause,
+                  }),
+              ),
+            ),
+        );
+      }),
+    );
   /** Environment settings with the acting project's overrides applied. */
   const projectSettingsFor = Effect.fnUntraced(function* (input: {
     readonly cwd: string;

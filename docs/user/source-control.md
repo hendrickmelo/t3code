@@ -37,6 +37,32 @@ If you have multiple `tea` accounts on one server, select one with
 `tea login default <login-name>`. Git push and clone also need Git credentials or an SSH key
 for that server.
 
+### Multiple accounts on one host
+
+When more than one account is signed in on the same host, such as two `gh auth login`
+accounts on github.com, every repository uses whichever account the CLI has active. To use a
+particular account for a repository, name it in `sourceControlAccountOverrides` in the server's
+`settings.json`, keyed by `host/owner/repo`:
+
+```json
+{
+  "sourceControlAccountOverrides": {
+    "github.com/acme/*": "<work-login>",
+    "github.com/*": "<personal-login>"
+  }
+}
+```
+
+Use `*` in place of a path segment to cover a whole organisation, and a host on its own as the
+default for everything else on it. The most specific entry wins, so the order of the file does
+not matter. An entry covers every project and worktree of the repositories it names.
+
+A pinned account is used by the pull request page and by the Git panel's source control actions
+alike, so a branch pushed and a pull request opened from one project use one identity. Anything
+not named keeps working exactly as before. GitLab, Bitbucket and Azure DevOps read credentials
+from the environment and cannot select an account, so pinning one reports an error rather than
+quietly using the wrong identity.
+
 ### GitLab
 
 Install [GitLab CLI](https://gitlab.com/gitlab-org/cli), then sign in:

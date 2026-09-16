@@ -108,6 +108,7 @@ import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as ReviewService from "./review/ReviewService.ts";
+import * as SourceControlAccountResolver from "./sourceControl/SourceControlAccountResolver.ts";
 import * as SourceControlProviderRegistry from "./sourceControl/SourceControlProviderRegistry.ts";
 import * as PullRequestReadCache from "./pullRequest/PullRequestReadCache.ts";
 import * as SourceControlRateLimit from "./sourceControl/SourceControlRateLimit.ts";
@@ -328,6 +329,10 @@ const RepositoryIdentityResolverLayerLive = Layer.effect(
   }),
 ).pipe(Layer.provide(SourceControlProviderRegistryLayerLive), Layer.provide(ProcessRunner.layer));
 
+const SourceControlAccountResolverLayerLive = SourceControlAccountResolver.layer.pipe(
+  Layer.provide(ServerSettingsLayerLive),
+);
+
 const PullRequestServiceLive = PullRequestService.layer.pipe(
   Layer.provide(PullRequestProviderRegistry.layer),
   // Where the viewed-file marks live for a host that keeps none of its own.
@@ -335,9 +340,12 @@ const PullRequestServiceLive = PullRequestService.layer.pipe(
   Layer.provide(PullRequestReadCache.layer),
   Layer.provide(SourceControlProviderRegistryLayerLive),
   Layer.provide(SourceControlRateLimit.layer),
+  Layer.provide(SourceControlAccountResolverLayerLive),
 );
 
 const GitManagerLayerLive = GitManager.layer.pipe(
+  // Git-panel source control acts as the repository's pinned account, the same as the page does.
+  Layer.provideMerge(SourceControlAccountResolverLayerLive),
   Layer.provideMerge(ProjectSetupScriptRunner.layer.pipe(Layer.provide(ServerSettingsLayerLive))),
   Layer.provideMerge(WorktreeSetupTracker.layer),
   Layer.provideMerge(GitVcsDriver.layer),
