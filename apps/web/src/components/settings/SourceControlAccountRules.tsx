@@ -13,7 +13,7 @@ import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectPopup, SelectTrigger } from "../ui/select";
-import { RedactedSensitiveText } from "./RedactedSensitiveText";
+import { RedactedSensitiveText, redactedPlaceholder } from "./RedactedSensitiveText";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { searchableSetting } from "./settingsSearch";
@@ -100,46 +100,41 @@ function RuleRow(props: {
           onChange={(event) => setPattern(event.target.value)}
           onBlur={(event) => commitPattern(event.target.value)}
         />
-        {/* The account is shown the way every other account on this page is: replaced by a
-            scrambled stand-in and revealed on click. Changing it is a separate control, because
-            a reveal button cannot live inside the select's own button. */}
-        <div className="flex w-44 shrink-0 items-center justify-end gap-1">
-          <RedactedSensitiveText
-            value={props.login}
-            ariaLabel={`Toggle the account for ${props.pattern === "" ? "this rule" : props.pattern}`}
-            revealTooltip="Click to reveal account"
-            hideTooltip="Click to hide account"
-            className="truncate"
-          />
-          <Select
-            value={props.login}
-            disabled={props.disabled}
-            onValueChange={(value) => {
-              if (typeof value !== "string" || value === props.login) return;
-              props.onSave(
-                updateAccountRules(props.overrides, { pattern: props.pattern, login: value }),
-              );
-            }}
+        <Select
+          value={props.login}
+          disabled={props.disabled}
+          onValueChange={(value) => {
+            if (typeof value !== "string" || value === props.login) return;
+            props.onSave(
+              updateAccountRules(props.overrides, { pattern: props.pattern, login: value }),
+            );
+          }}
+        >
+          {/* The account is hidden the way the rest of the page hides one: a scrambled stand-in
+              of the same shape, so there is no real login on the page to read. Opening the list
+              is the reveal, and it is also how the account is changed. */}
+          <SelectTrigger
+            size="sm"
+            className="w-44 shrink-0"
+            aria-label={`Account for ${props.pattern === "" ? "this rule" : props.pattern}`}
           >
-            <SelectTrigger
-              size="sm"
-              className="w-auto shrink-0 px-1.5"
-              aria-label="Change the account for this rule"
-            />
-            <SelectPopup>
-              <SelectContent>
-                {props.accounts.some((account) => account.login === props.login) ? null : (
-                  <SelectItem value={props.login}>{props.login}</SelectItem>
-                )}
-                {props.accounts.map((account) => (
-                  <SelectItem key={`${account.host}/${account.login}`} value={account.login}>
-                    {account.login}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </SelectPopup>
-          </Select>
-        </div>
+            <span className="flex-1 select-none truncate text-start font-mono text-[11px] leading-none text-muted-foreground blur-[2px]">
+              {redactedPlaceholder(props.login)}
+            </span>
+          </SelectTrigger>
+          <SelectPopup>
+            <SelectContent>
+              {props.accounts.some((account) => account.login === props.login) ? null : (
+                <SelectItem value={props.login}>{props.login}</SelectItem>
+              )}
+              {props.accounts.map((account) => (
+                <SelectItem key={`${account.host}/${account.login}`} value={account.login}>
+                  {account.login}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </SelectPopup>
+        </Select>
         <Button
           size="icon-xs"
           variant="ghost-muted"

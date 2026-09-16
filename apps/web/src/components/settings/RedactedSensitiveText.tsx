@@ -5,7 +5,11 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 const REDACTED_TEXT_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
 
-function redactedPlaceholder(value: string): string {
+/**
+ * A stand-in of the same shape as `value`, stable across renders. Exported for the places that
+ * must redact inside another control, where the button this component renders cannot be nested.
+ */
+export function redactedPlaceholder(value: string): string {
   let state = 0x811c9dc5;
   for (let index = 0; index < value.length; index += 1) {
     state ^= value.charCodeAt(index);
