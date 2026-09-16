@@ -118,12 +118,18 @@ export function providerAuth(input: {
   readonly account?: string | undefined;
   readonly host?: string | undefined;
   readonly detail?: string | undefined;
+  readonly accounts?: SourceControlProviderAuth["accounts"];
 }): SourceControlProviderAuth {
   return {
     status: input.status,
     account: authAccount(input.account),
     host: authHost(input.host),
     detail: authDetail(input.detail),
+    // Absent rather than empty where a tool cannot enumerate its accounts, so a client can tell
+    // "none signed in" apart from "this provider never says".
+    ...(input.accounts === undefined || input.accounts.length === 0
+      ? {}
+      : { accounts: input.accounts }),
   };
 }
 

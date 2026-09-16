@@ -5,7 +5,6 @@ import { DEFAULT_SERVER_SETTINGS, type SourceControlProviderKind } from "@t3tool
 
 import * as ServerSettings from "../serverSettings.ts";
 import {
-  matchSourceControlAccountOverride,
   PinnedSourceControlAccount,
   withPinnedSourceControlAccount,
 } from "./SourceControlAccount.ts";
@@ -29,58 +28,6 @@ const pin = (kind: SourceControlProviderKind, host: string, canonicalKey: string
   kind,
   host,
   canonicalKey,
-});
-
-it("matches an override by repository, by owner, or by host, most specific first", () => {
-  const overrides = {
-    "github.com/advancedtomo/*": "hmelo-amix",
-    "github.com/advancedtomo/ats-fw": "hendrickmelo",
-    "github.com/*": "fallback-user",
-    "codeberg.org/maria/site": "maria",
-  };
-  const matched = (key: string) => matchSourceControlAccountOverride(overrides, key);
-
-  // The named repository wins over the pin covering its owner.
-  assert.strictEqual(matched("github.com/advancedtomo/ats-fw"), "hendrickmelo");
-  assert.strictEqual(matched("github.com/advancedtomo/ats-hw"), "hmelo-amix");
-  // An owner nobody named falls back to the host-wide pin.
-  assert.strictEqual(matched("github.com/someone/thing"), "fallback-user");
-  assert.strictEqual(matched("codeberg.org/maria/site"), "maria");
-  assert.isUndefined(matched("codeberg.org/maria/other"));
-  // Keys and patterns compare case-insensitively, as hosts treat logins.
-  assert.strictEqual(matched("GitHub.com/AdvancedTomo/ATS-FW"), "hendrickmelo");
-  // An owner wildcard does not reach into a shorter path.
-  assert.isUndefined(
-    matchSourceControlAccountOverride({ "forgejo.local/maria/*": "maria" }, "forgejo.local/maria"),
-  );
-});
-
-it("does not let the order of the settings file decide an override", () => {
-  const entries = {
-    "github.com/advancedtomo/ats-fw": "hendrickmelo",
-    "github.com/advancedtomo/*": "hmelo-amix",
-  };
-  const reversed = Object.fromEntries(Object.entries(entries).toReversed());
-  for (const overrides of [entries, reversed]) {
-    assert.strictEqual(
-      matchSourceControlAccountOverride(overrides, "github.com/advancedtomo/ats-fw"),
-      "hendrickmelo",
-    );
-  }
-});
-
-it("lets a host-wide entry act as the default account for everything else", () => {
-  const overrides = {
-    "github.com/autonomix-medical/*": "hmelo-amix",
-    "github.com/*": "hendrickmelo",
-  };
-  const matched = (key: string) => matchSourceControlAccountOverride(overrides, key);
-
-  assert.strictEqual(matched("github.com/autonomix-medical/firmware"), "hmelo-amix");
-  assert.strictEqual(matched("github.com/advancedtomo/ats-fw"), "hendrickmelo");
-  assert.strictEqual(matched("github.com/hendrickmelo/cantinho"), "hendrickmelo");
-  // The catch-all is bounded by its host, so another host still resolves on its own.
-  assert.isUndefined(matched("codeberg.org/maria/site"));
 });
 
 it.effect("pins a whole organisation and leaves everything else on the active account", () =>

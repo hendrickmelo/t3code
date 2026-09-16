@@ -118,11 +118,25 @@ export const SourceControlProviderAuthStatus = Schema.Literals([
 ]);
 export type SourceControlProviderAuthStatus = typeof SourceControlProviderAuthStatus.Type;
 
+export const SourceControlProviderAccount = Schema.Struct({
+  login: TrimmedNonEmptyString,
+  host: TrimmedNonEmptyString,
+  /** The account the tool uses when nothing names one. */
+  active: Schema.Boolean,
+});
+export type SourceControlProviderAccount = typeof SourceControlProviderAccount.Type;
+
 export const SourceControlProviderAuth = Schema.Struct({
   status: SourceControlProviderAuthStatus,
   account: Schema.Option(TrimmedNonEmptyString),
   host: Schema.Option(TrimmedNonEmptyString),
   detail: Schema.Option(TrimmedNonEmptyString),
+  /**
+   * Every account signed in to this provider, which is what an account rule picks from.
+   * `account` above is whichever one it would use today. Optional on the wire so a snapshot
+   * cached from an older server still decodes.
+   */
+  accounts: Schema.optional(Schema.Array(SourceControlProviderAccount)),
 });
 export type SourceControlProviderAuth = typeof SourceControlProviderAuth.Type;
 

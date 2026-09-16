@@ -305,3 +305,62 @@ export function canonicalRepositoryKey(key: string): string {
       "dev.azure.com/$1/$2/_git/$3",
     );
 }
+
+/**
+ * Whether an override key covers a repository. `*` stands for one path segment, and a trailing
+ * `*` covers the rest of the path, so `github.com/acme/*` names every repository of one owner.
+ * Both sides arrive canonical and lowercased.
+ */
+function accountOverrideMatches(
+  pattern: ReadonlyArray<string>,
+  key: ReadonlyArray<string>,
+): boolean {
+  for (const [index, segment] of pattern.entries()) {
+    const last = index === pattern.length - 1;
+    if (segment === "*") {
+      // A trailing wildcard takes whatever is left, which must be at least one segment.
+      if (last) return key.length > index;
+      if (key[index] === undefined) return false;
+      continue;
+    }
+    if (key[index] !== segment) return false;
+    if (last && key.length !== pattern.length) return false;
+  }
+  return pattern.length === key.length;
+}
+
+/**
+ * The override entry pinning a repository to an account, or undefined where none does. The most
+ * specific key wins, so naming one repository overrides a pin covering its whole owner however
+ * the settings file is ordered. Shared with the clients so a rule's reach can be shown without
+ * asking the server what it matched.
+ */
+export function matchSourceControlAccountOverrideEntry(
+  overrides: Readonly<Record<string, string>>,
+  canonicalKey: string,
+): { readonly pattern: string; readonly login: string } | undefined {
+  const key = canonicalRepositoryKey(canonicalKey.trim().toLowerCase()).split("/");
+  let best: { pattern: string; login: string; literals: number } | undefined;
+  for (const [pattern, login] of Object.entries(overrides)) {
+    const segments = pattern.trim().toLowerCase().split("/");
+    if (!accountOverrideMatches(segments, key)) continue;
+    const literals = segments.filter((segment) => segment !== "*").length;
+    // Ordering by key keeps two equally specific patterns from depending on file order.
+    if (
+      best === undefined ||
+      literals > best.literals ||
+      (literals === best.literals && pattern < best.pattern)
+    ) {
+      best = { pattern, login, literals };
+    }
+  }
+  return best === undefined ? undefined : { pattern: best.pattern, login: best.login };
+}
+
+/** The login pinned for a repository, or undefined where none is. */
+export function matchSourceControlAccountOverride(
+  overrides: Readonly<Record<string, string>>,
+  canonicalKey: string,
+): string | undefined {
+  return matchSourceControlAccountOverrideEntry(overrides, canonicalKey)?.login;
+}

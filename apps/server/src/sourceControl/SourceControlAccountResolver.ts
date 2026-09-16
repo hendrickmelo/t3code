@@ -1,12 +1,11 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { canonicalRepositoryKey } from "@t3tools/shared/sourceControl";
+import { matchSourceControlAccountOverride } from "@t3tools/shared/sourceControl";
 import type { SourceControlProviderKind } from "@t3tools/contracts";
 
 import * as ServerSettings from "../serverSettings.ts";
 import {
-  matchSourceControlAccountOverride,
   type PinnedSourceControlAccountValue,
   SourceControlAccountUnsupportedError,
   sourceControlAccountSupport,
@@ -47,10 +46,7 @@ export const make = Effect.gen(function* () {
       // active account rather than failing every repository behind it.
       Effect.orElseSucceed(() => ({}) as Readonly<Record<string, string>>),
     );
-    const login = matchSourceControlAccountOverride(
-      overrides,
-      canonicalRepositoryKey(input.canonicalKey.toLowerCase()),
-    );
+    const login = matchSourceControlAccountOverride(overrides, input.canonicalKey);
     if (login === undefined) return null;
     const support = sourceControlAccountSupport(input.kind);
     if (!support.supported) {

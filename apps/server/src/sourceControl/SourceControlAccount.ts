@@ -73,53 +73,6 @@ export class SourceControlAccountUnsupportedError extends Schema.TaggedError<Sou
 }
 
 /**
- * Whether an override key covers a repository. `*` stands for one path segment, and a trailing
- * `*` covers the rest of the path, so `github.com/acme/*` names every repository of one owner.
- * Both sides arrive canonical and lowercased.
- */
-function overrideMatches(pattern: ReadonlyArray<string>, key: ReadonlyArray<string>): boolean {
-  for (const [index, segment] of pattern.entries()) {
-    const last = index === pattern.length - 1;
-    if (segment === "*") {
-      // A trailing wildcard takes whatever is left, which must be at least one segment.
-      if (last) return key.length > index;
-      if (key[index] === undefined) return false;
-      continue;
-    }
-    if (key[index] !== segment) return false;
-    if (last && key.length !== pattern.length) return false;
-  }
-  return pattern.length === key.length;
-}
-
-/**
- * The login pinned for a repository, or undefined where none is. The most specific key wins, so
- * naming one repository overrides a pin covering its whole owner however the file is ordered.
- */
-export function matchSourceControlAccountOverride(
-  overrides: Readonly<Record<string, string>>,
-  canonicalKey: string,
-): string | undefined {
-  const key = canonicalKey.toLowerCase().split("/");
-  let best: { readonly pattern: string; readonly login: string; readonly literals: number } | null =
-    null;
-  for (const [pattern, login] of Object.entries(overrides)) {
-    const segments = pattern.trim().toLowerCase().split("/");
-    if (!overrideMatches(segments, key)) continue;
-    const literals = segments.filter((segment) => segment !== "*").length;
-    // Ordering by key keeps two equally specific patterns from depending on file order.
-    if (
-      best === null ||
-      literals > best.literals ||
-      (literals === best.literals && pattern < best.pattern)
-    ) {
-      best = { pattern, login, literals };
-    }
-  }
-  return best?.login;
-}
-
-/**
  * Every call this provider makes runs as `account`, which is resolved once per call rather than
  * bound here: a provider is held per working directory and outlives an account switch.
  */

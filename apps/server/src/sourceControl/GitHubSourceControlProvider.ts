@@ -66,6 +66,11 @@ function parseGitHubAuth(input: SourceControlAuthProbeInput) {
       status: "authenticated",
       account: authenticatedAccount.account,
       host,
+      // Every signed-in account, not just the one this command would use, so account rules
+      // can be written against the others without the reader going to the terminal.
+      accounts: authStatus.accounts
+        .filter((entry) => entry.authenticated)
+        .map((entry) => ({ login: entry.account, host: entry.host, active: entry.active })),
     });
   }
 

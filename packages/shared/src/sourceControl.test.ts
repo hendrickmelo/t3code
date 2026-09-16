@@ -5,8 +5,70 @@ import {
   detectSourceControlProviderFromRemoteUrl,
   getChangeRequestTerminologyForKind,
   isSshRemoteUrl,
+  matchSourceControlAccountOverride,
+  matchSourceControlAccountOverrideEntry,
   resolveChangeRequestPresentation,
 } from "./sourceControl.ts";
+
+describe("source control account overrides", () => {
+  const overrides = {
+    "github.com/advancedtomo/*": "hmelo-amix",
+    "github.com/advancedtomo/ats-fw": "hendrickmelo",
+    "github.com/*": "fallback-user",
+    "codeberg.org/maria/site": "maria",
+  };
+
+  it("prefers the most specific matching rule", () => {
+    expect(matchSourceControlAccountOverride(overrides, "github.com/advancedtomo/ats-fw")).toBe(
+      "hendrickmelo",
+    );
+    expect(matchSourceControlAccountOverride(overrides, "github.com/advancedtomo/ats-hw")).toBe(
+      "hmelo-amix",
+    );
+    expect(matchSourceControlAccountOverride(overrides, "github.com/someone/thing")).toBe(
+      "fallback-user",
+    );
+    expect(
+      matchSourceControlAccountOverride(overrides, "codeberg.org/maria/other"),
+    ).toBeUndefined();
+  });
+
+  it("compares hosts, owners and repositories case-insensitively", () => {
+    expect(matchSourceControlAccountOverride(overrides, "GitHub.com/AdvancedTomo/ATS-FW")).toBe(
+      "hendrickmelo",
+    );
+  });
+
+  it("does not let the order of the settings file decide", () => {
+    const entries = {
+      "github.com/advancedtomo/ats-fw": "hendrickmelo",
+      "github.com/advancedtomo/*": "hmelo-amix",
+    };
+    for (const candidate of [entries, Object.fromEntries(Object.entries(entries).toReversed())]) {
+      expect(matchSourceControlAccountOverride(candidate, "github.com/advancedtomo/ats-fw")).toBe(
+        "hendrickmelo",
+      );
+    }
+  });
+
+  it("does not let an owner wildcard reach a shorter path", () => {
+    expect(
+      matchSourceControlAccountOverride(
+        { "forgejo.local/maria/*": "maria" },
+        "forgejo.local/maria",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("reports which rule matched so a rule's reach can be shown", () => {
+    expect(
+      matchSourceControlAccountOverrideEntry(overrides, "github.com/advancedtomo/ats-hw"),
+    ).toEqual({ pattern: "github.com/advancedtomo/*", login: "hmelo-amix" });
+    expect(
+      matchSourceControlAccountOverrideEntry(overrides, "codeberg.org/maria/other"),
+    ).toBeUndefined();
+  });
+});
 
 describe("source control presentation", () => {
   it("uses merge request terminology for GitLab", () => {

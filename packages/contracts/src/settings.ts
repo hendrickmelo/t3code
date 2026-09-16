@@ -1489,6 +1489,13 @@ export const ServerSettingsPatch = Schema.Struct({
   projectAutoPullOverrides: Schema.optionalKey(
     Schema.Record(ProjectId, Schema.NullOr(Schema.Boolean)),
   ),
+  /**
+   * Account rules, replaced whole: the client holds the current set and sends the set it wants,
+   * because a rule is edited by rewriting its pattern and a per-key null could not say "renamed".
+   */
+  sourceControlAccountOverrides: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, TrimmedNonEmptyString),
+  ),
   defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
   /**
