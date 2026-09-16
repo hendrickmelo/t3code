@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { PlusIcon, TriangleAlertIcon, XIcon } from "lucide-react";
+import { ChevronDownIcon, PlusIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import type {
   SourceControlDiscoveryResult,
   SourceControlProviderAccount,
@@ -8,7 +8,9 @@ import type {
 import * as Option from "effect/Option";
 
 import { useProjects } from "../../state/entities";
+import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
+import { Collapsible, CollapsibleContent } from "../ui/collapsible";
 import { Input } from "../ui/input";
 import {
   Select,
@@ -18,6 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../ui/select";
+import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { searchableSetting } from "./settingsSearch";
@@ -114,8 +117,10 @@ function RuleRow(props: {
             );
           }}
         >
-          <SelectTrigger size="sm" className="w-48" aria-label="Account for this pattern">
-            <SelectValue />
+          {/* Blurred like every other account on this page; the trigger clears it on focus,
+              since choosing an account means interacting with the control anyway. */}
+          <SelectTrigger size="sm" className="group w-48" aria-label="Account for this pattern">
+            <SelectValue className="select-none font-mono text-[11px] blur-[2px] transition group-hover:blur-none group-focus-visible:blur-none group-data-[popup-open]:blur-none" />
           </SelectTrigger>
           <SelectPopup>
             <SelectContent>
@@ -176,6 +181,8 @@ export function SourceControlAccountRules(props: {
   const updateSettings = useUpdateScopedSettings();
   const projects = useProjects();
   const [adding, setAdding] = useState(false);
+  // Collapsed by default: the rules are the control, and the list below is for checking them.
+  const [showRepositories, setShowRepositories] = useState(false);
 
   const overrides = settings.sourceControlAccountOverrides;
   const accounts = accountOptions(props.discovery);
@@ -186,13 +193,14 @@ export function SourceControlAccountRules(props: {
     repositories,
     providerKinds(props.discovery),
   );
+  const pinnedCount = resolved.filter((repository) => repository.login !== null).length;
   const save = (next: Record<string, string>) => {
     setAdding(false);
     updateSettings({ sourceControlAccountOverrides: next });
   };
 
   return (
-    <SettingsSection title="Account rules">
+    <SettingsSection title="Accounts">
       <SettingsRow
         {...searchableSetting("source-control-account-rules")}
         serverScoped
@@ -250,39 +258,69 @@ export function SourceControlAccountRules(props: {
       {repositories.length === 0 ? null : (
         <SettingsRow
           title="Repositories"
-          description="What each repository in this workspace resolves to right now."
+          description={
+            pinnedCount === 0
+              ? `${repositories.length} in this workspace, none pinned yet.`
+              : `${pinnedCount} of ${repositories.length} pinned by a rule; the rest use the active account.`
+          }
+          control={
+            <Button
+              size="icon-xs"
+              variant="ghost-muted"
+              onClick={() => setShowRepositories((open) => !open)}
+              aria-expanded={showRepositories}
+              aria-label="Toggle the repository list"
+            >
+              <ChevronDownIcon
+                className={cn("size-3.5 transition-transform", showRepositories && "rotate-180")}
+              />
+            </Button>
+          }
         >
-          <div className="pt-1 pb-2">
-            {resolved.map((repository) => (
-              <div
-                key={repository.canonicalKey}
-                className="flex items-center gap-2 border-t border-border/50 py-2"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-mono text-xs">{repository.canonicalKey}</p>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {repository.projectTitles.join(", ")}
-                  </p>
-                </div>
-                <div className="flex min-w-0 items-center gap-1.5 text-right">
-                  {repository.unsupportedReason === null ? null : (
-                    <TriangleAlertIcon
-                      className="size-3.5 shrink-0 text-warning"
-                      aria-label={repository.unsupportedReason}
-                    />
-                  )}
-                  <div className="min-w-0">
-                    <p className="truncate text-xs">{repository.login ?? "Active account"}</p>
-                    {repository.pattern === null ? null : (
-                      <p className="truncate font-mono text-[11px] text-muted-foreground">
-                        {repository.pattern}
+          <Collapsible open={showRepositories} onOpenChange={setShowRepositories}>
+            <CollapsibleContent>
+              <div className="pt-1 pb-2">
+                {resolved.map((repository) => (
+                  <div
+                    key={repository.canonicalKey}
+                    className="flex items-center gap-2 border-t border-border/50 py-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-mono text-xs">{repository.canonicalKey}</p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {repository.projectTitles.join(", ")}
                       </p>
-                    )}
+                    </div>
+                    <div className="flex min-w-0 items-center gap-1.5 text-right">
+                      {repository.unsupportedReason === null ? null : (
+                        <TriangleAlertIcon
+                          className="size-3.5 shrink-0 text-warning"
+                          aria-label={repository.unsupportedReason}
+                        />
+                      )}
+                      <div className="min-w-0">
+                        {repository.login === null ? (
+                          <p className="truncate text-xs text-muted-foreground">Active account</p>
+                        ) : (
+                          <RedactedSensitiveText
+                            value={repository.login}
+                            ariaLabel={`Toggle the account for ${repository.canonicalKey}`}
+                            revealTooltip="Click to reveal account"
+                            hideTooltip="Click to hide account"
+                          />
+                        )}
+                        {repository.pattern === null ? null : (
+                          <p className="truncate font-mono text-[11px] text-muted-foreground">
+                            {repository.pattern}
+                          </p>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </CollapsibleContent>
+          </Collapsible>
         </SettingsRow>
       )}
     </SettingsSection>
