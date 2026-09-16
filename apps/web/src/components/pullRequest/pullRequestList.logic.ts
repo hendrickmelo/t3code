@@ -144,9 +144,10 @@ export function pullRequestEntryViewer(
   entry: ScopedEntry,
   viewers: PullRequestViewers,
 ): string | null {
-  // The environment's own answer first; a plain host key is what a single-environment listing
-  // still writes, and what the snapshot from one carries.
-  return normalize(viewers[pullRequestViewerKey(entry)] ?? viewers[entry.host]);
+  // The row's own account first, since a project may pin one the rest of its host does not use;
+  // then the environment's answer; a plain host key is what a single-environment listing still
+  // writes, and what the snapshot from one carries.
+  return normalize(entry.viewer ?? viewers[pullRequestViewerKey(entry)] ?? viewers[entry.host]);
 }
 
 /**

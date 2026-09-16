@@ -314,6 +314,24 @@ describe("pull request involvement filtering", () => {
     ).toEqual([1]);
   });
 
+  it("judges a row by the account it was read as before the host's viewer", () => {
+    const pinned = [
+      entry({
+        number: 4,
+        viewer: "maria-work",
+        author: { login: "Maria-Work", name: null, avatarUrl: null },
+      }),
+      entry({
+        number: 5,
+        viewer: "maria-work",
+        author: { login: "Bilal", name: null, avatarUrl: null },
+      }),
+    ];
+    expect(
+      filterPullRequestsByInvolvement(pinned, VIEWERS, "authored").map((item) => item.number),
+    ).toEqual([4]);
+  });
+
   it("returns nothing for Authored when the viewer is unknown", () => {
     expect(filterPullRequestsByInvolvement(entries, NO_VIEWERS, "authored")).toEqual([]);
   });

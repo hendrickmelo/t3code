@@ -14,6 +14,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -69,6 +70,7 @@ import {
   type PullRequestUpdateInput,
   type SourceControlProviderInfo,
   type SourceControlProviderKind,
+  SourceControlProviderKind as SourceControlProviderKindSchema,
 } from "@t3tools/contracts";
 import { detectSourceControlProviderFromRemoteUrl } from "@t3tools/shared/sourceControl";
 
@@ -77,6 +79,11 @@ import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSn
 import * as PullRequestFilesViewed from "../persistence/PullRequestFilesViewed.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as SourceControlRateLimit from "../sourceControl/SourceControlRateLimit.ts";
+import {
+  PinnedSourceControlAccount,
+  type PinnedSourceControlAccountValue,
+} from "../sourceControl/SourceControlAccount.ts";
+import * as SourceControlAccountResolver from "../sourceControl/SourceControlAccountResolver.ts";
 import {
   type ProviderChangeRequest,
   type ProviderListCursor,
@@ -319,6 +326,8 @@ export interface SupportedProject {
    * Unique where `repository` is not: Azure's is a bare name that repeats across an organisation.
    */
   readonly remote: string;
+  /** The account this project reads as; null means the CLI's active account on the host. */
+  readonly account: Effect.Effect<PinnedSourceControlAccountValue | null, PullRequestProviderError>;
 }
 
 /**
@@ -475,13 +484,43 @@ function toPullRequestError(
       : new PullRequestOperationError({ operation, detail: error.detail, cause: error });
 }
 
+/** One viewer lookup in flight: host, provider kind, pinned login, and the checkouts to ask from. */
+const ViewerFlightKey = Schema.fromJsonString(
+  Schema.Tuple([
+    Schema.String,
+    SourceControlProviderKindSchema,
+    Schema.NullOr(Schema.String),
+    Schema.Array(Schema.String),
+  ]),
+);
+const encodeViewerFlightKey = Schema.encodeSync(ViewerFlightKey);
+const decodeViewerFlightKey = Schema.decodeSync(ViewerFlightKey);
+
+/**
+ * Rate-limit backoff around every provider call, and the project's pinned account provided to
+ * each of them so the provider acts as that account rather than the CLI's active one.
+ */
 function withRateLimitBackoff(
   api: PullRequestProviderApi,
   host: string,
   limits: SourceControlRateLimit.SourceControlRateLimit["Service"],
-  options?: { readonly viewerAllowsPause: boolean },
+  options?: {
+    readonly viewerAllowsPause?: boolean;
+    /** The project's pinned account; absent leaves every call on the CLI's active one. */
+    readonly account?: Effect.Effect<
+      PinnedSourceControlAccountValue | null,
+      PullRequestProviderError
+    >;
+  },
 ): PullRequestProviderApi {
+  const account = options?.account;
   const key = { provider: api.kind, host };
+  const pinned = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    account === undefined
+      ? effect
+      : Effect.flatMap(account, (pin) =>
+          Effect.provideService(effect, PinnedSourceControlAccount, pin),
+        );
   const protect = <A>(
     operation: string,
     effect: Effect.Effect<A, PullRequestProviderError>,
@@ -500,8 +539,7 @@ function withRateLimitBackoff(
           }),
       ),
       Effect.flatMap((lease) =>
-        effect.pipe(
-          Effect.provideService(AllowGitHubReserve, allowPaused),
+        pinned(effect.pipe(Effect.provideService(AllowGitHubReserve, allowPaused))).pipe(
           Effect.tap(() => limits.recordSuccess({ ...key, lease })),
           Effect.tapError((error) =>
             error.reason === "rate-limited"
@@ -538,10 +576,24 @@ function withRateLimitBackoff(
       options?.viewerAllowsPause === true
         ? interactive("getViewer", api.getViewer)
         : wrap("getViewer", api.getViewer),
-    ...(api.getRoutingIdentity === undefined ? {} : { getRoutingIdentity: api.getRoutingIdentity }),
+    ...(api.getRoutingIdentity === undefined
+      ? {}
+      : {
+          getRoutingIdentity: (input: { readonly cwd: string; readonly host: string }) =>
+            pinned(api.getRoutingIdentity!(input)),
+        }),
     ...(api.withVerifiedCredential === undefined
       ? {}
-      : { withVerifiedCredential: api.withVerifiedCredential }),
+      : {
+          withVerifiedCredential: <A, E, R>(
+            input: { readonly cwd: string; readonly host: string },
+            use: (identity: {
+              readonly accountId: string;
+              readonly viewer: string;
+              readonly credentialFingerprint: string;
+            }) => Effect.Effect<A, E, R>,
+          ) => pinned(api.withVerifiedCredential!(input, use)),
+        }),
     listChangeRequests: wrap("listChangeRequests", api.listChangeRequests),
     ...(api.listChangeRequestsAcross === undefined
       ? {}
@@ -626,6 +678,31 @@ export const make = Effect.gen(function* () {
   const rateLimits = yield* SourceControlRateLimit.SourceControlRateLimit;
   const filesViewedStore = yield* PullRequestFilesViewed.PullRequestFilesViewedRepository;
   const readCache = yield* PullRequestReadCache.PullRequestReadCache;
+  const accounts = yield* SourceControlAccountResolver.SourceControlAccountResolver;
+
+  // A pin the provider cannot honor fails that project's calls with the reason, rather than
+  // quietly running them as whichever account the CLI has active. A project whose remote was
+  // never identified has no repository for a pin to name.
+  const accountFor = (
+    project: OrchestrationProjectShell,
+    kind: SourceControlProviderKind,
+    host: string,
+  ) => {
+    const canonicalKey = project.repositoryIdentity?.canonicalKey;
+    if (canonicalKey === undefined) return Effect.succeed(null);
+    return accounts.resolve({ kind, host, canonicalKey }).pipe(
+      Effect.mapError(
+        (error) =>
+          new PullRequestProviderError({
+            provider: kind,
+            operation: "selectAccount",
+            reason: "failed",
+            detail: error.message,
+            cause: error,
+          }),
+      ),
+    );
+  };
 
   const refineUnknownProjectKinds = (
     projects: ReadonlyArray<OrchestrationProjectShell>,
@@ -778,16 +855,18 @@ export const make = Effect.gen(function* () {
             else counted.projectCount += 1;
             continue;
           }
+          const account = accountFor(project, kind, host);
           supported.push({
             cursorKey: key,
             project,
-            api: withRateLimitBackoff(api, host, rateLimits),
+            api: withRateLimitBackoff(api, host, rateLimits, { account }),
             repository,
             host,
             remote:
               kind === "azure-devops"
                 ? identity.canonicalKey
                 : normalizeGitRemoteUrl(`https://${host}/${repository}`),
+            account,
           });
         }
         return { supported, unimplemented, viewerRoots };
@@ -938,22 +1017,26 @@ export const make = Effect.gen(function* () {
   type ResolvedViewer = {
     readonly host: string;
     readonly kind: SourceControlProviderKind;
+    /** The pinned account this answer is for; null is the host's active account. */
+    readonly login: string | null;
     readonly viewer: string | null;
     readonly error: PullRequestProviderError | null;
   };
+  // One answer per host and account: two projects pinned to different accounts on github.com
+  // are two different "I"s, while unpinned projects share the host's active account.
+  const viewerKey = (host: string, login: string | null) => `${host}\0${login ?? ""}`;
   // Who is signed in moves on the timescale of `gh auth login`, not of a page visit, yet every
   // list read was asking each host's CLI again — a subprocess and a network round trip per host
   // per read, three reads per page. Only a success is believed for a while: a failure is the
   // "is this host set up" answer the provider switcher shows, and holding it would keep saying
   // signed-out after the reader has signed in.
-  const viewersByHost = new Map<string, { readonly at: number; readonly result: ResolvedViewer }>();
+  const viewersByAccount = new Map<
+    string,
+    { readonly at: number; readonly result: ResolvedViewer }
+  >();
   const viewerFlights = yield* Cache.makeWith(
     (key: string): Effect.Effect<ResolvedViewer> => {
-      const [host, kind, roots] = JSON.parse(key) as [
-        string,
-        SourceControlProviderKind,
-        ReadonlyArray<string>,
-      ];
+      const [host, kind, login, roots] = decodeViewerFlightKey(key);
       const registered = registry.get(kind);
       if (registered === null) {
         return Effect.die(new Error(`Missing pull request provider: ${kind}`));
@@ -961,21 +1044,28 @@ export const make = Effect.gen(function* () {
       // Let through a pause: a press the reader is waiting on has to be answered, and the
       // callers that are not that press are held back at the gate below instead, before they
       // reach this lookup at all.
-      const api = withRateLimitBackoff(registered, host, rateLimits, { viewerAllowsPause: true });
+      const api = withRateLimitBackoff(registered, host, rateLimits, {
+        viewerAllowsPause: true,
+        account: Effect.succeed(login === null ? null : { host, login }),
+      });
       return Effect.firstSuccessOf(roots.map((cwd) => api.getViewer({ cwd, host }))).pipe(
         Effect.map((viewer) => ({
           host,
           kind,
+          login,
           viewer: viewer as string | null,
           error: null as PullRequestProviderError | null,
         })),
         Effect.tap((result) =>
-          Effect.map(Clock.currentTimeMillis, (at) => viewersByHost.set(host, { at, result })),
+          Effect.map(Clock.currentTimeMillis, (at) =>
+            viewersByAccount.set(viewerKey(host, login), { at, result }),
+          ),
         ),
         Effect.catch((error) =>
           Effect.succeed({
             host,
             kind,
+            login,
             viewer: null,
             error,
           }),
@@ -991,55 +1081,112 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  /** Who each project reads as, keyed by project id; projects sharing a host and account share one answer. */
   const resolveViewers = (
     projects: ReadonlyArray<SupportedProject>,
     viewerRoots: WorkspaceProjects["viewerRoots"],
     options?: { readonly allowPaused: boolean },
-  ) =>
-    Effect.forEach(
-      [...new Set(projects.map(({ host }) => host))],
-      (host) =>
-        Effect.flatMap(Clock.currentTimeMillis, (now): Effect.Effect<ResolvedViewer> => {
-          const held = viewersByHost.get(host);
-          if (held !== undefined && now - held.at <= Duration.toMillis(VIEWER_CACHE_TTL)) {
-            return Effect.succeed(held.result);
-          }
-          const forHost = projects.filter((project) => project.host === host);
-          const api = forHost[0]!.api;
-          // Every checkout on the host, not just the ones that survived de-duplication: one
-          // unreadable worktree would otherwise report the whole host as signed out.
-          const roots =
-            viewerRoots.get(host) ?? forHost.map(({ project }) => project.workspaceRoot);
-          // Nothing about the caller is in the key. A listing and a press for the same host and
-          // roots are the same lookup, and putting them on separate flights would spawn two of
-          // this host's CLIs on a cold page load, which is the coalescing this exists for.
-          const key = JSON.stringify([host, api.kind, [...new Set(roots)].sort()]);
-          if (options?.allowPaused === true) return Cache.get(viewerFlights, key);
-          // The pause is checked here rather than inside the lookup, so that it holds back the
-          // callers nobody is waiting on without splitting the flight they share with a press.
-          // A failed lookup is held nowhere, so letting a background read through would spawn
-          // this host's CLI on every refresh for as long as the pause lasted, and re-extend it.
-          return rateLimits.check({ provider: api.kind, host }).pipe(
-            Effect.flatMap(() => Cache.get(viewerFlights, key)),
-            Effect.catch((error) =>
-              Effect.succeed<ResolvedViewer>({
-                host,
-                kind: api.kind,
-                viewer: null,
-                error: new PullRequestProviderError({
-                  provider: api.kind,
-                  operation: "getViewer",
-                  reason: "rate-limited",
-                  detail: error.detail,
-                  retryAt: error.retryAt,
-                  cause: error,
-                }),
-              }),
-            ),
-          );
-        }),
-      { concurrency: REPOSITORY_CONCURRENCY },
-    );
+  ): Effect.Effect<ReadonlyMap<ProjectId, ResolvedViewer>> =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const accounts = yield* Effect.forEach(
+        projects,
+        (project) => Effect.result(project.account),
+        {
+          concurrency: REPOSITORY_CONCURRENCY,
+        },
+      );
+      const results = new Map<ProjectId, ResolvedViewer>();
+      const groups = new Map<
+        string,
+        {
+          host: string;
+          kind: SourceControlProviderKind;
+          login: string | null;
+          members: SupportedProject[];
+        }
+      >();
+      projects.forEach((project, index) => {
+        const account = accounts[index]!;
+        // A pin the provider cannot honor is that project's own failure, not the host's.
+        if (Result.isFailure(account)) {
+          results.set(project.project.id, {
+            host: project.host,
+            kind: project.api.kind,
+            login: null,
+            viewer: null,
+            error: account.failure,
+          });
+          return;
+        }
+        const login = account.success?.login ?? null;
+        const key = viewerKey(project.host, login);
+        const group = groups.get(key);
+        if (group === undefined) {
+          groups.set(key, {
+            host: project.host,
+            kind: project.api.kind,
+            login,
+            members: [project],
+          });
+        } else group.members.push(project);
+      });
+      yield* Effect.forEach(
+        groups.values(),
+        (group) =>
+          Effect.gen(function* () {
+            const held = viewersByAccount.get(viewerKey(group.host, group.login));
+            let resolved: ResolvedViewer;
+            if (held !== undefined && now - held.at <= Duration.toMillis(VIEWER_CACHE_TTL)) {
+              resolved = held.result;
+            } else {
+              // Every checkout on the host, not just the ones that survived de-duplication: one
+              // unreadable worktree would otherwise report the whole host as signed out. A pinned
+              // account only has its own projects' checkouts to ask from.
+              const own = group.members.map(({ project }) => project.workspaceRoot);
+              const roots = group.login === null ? (viewerRoots.get(group.host) ?? own) : own;
+              // Nothing about the caller is in the key. A listing and a press for the same host,
+              // account and roots are the same lookup, and putting them on separate flights would
+              // spawn two of this host's CLIs on a cold page load.
+              const key = encodeViewerFlightKey([
+                group.host,
+                group.kind,
+                group.login,
+                [...new Set(roots)].sort(),
+              ]);
+              // The pause is checked here rather than inside the lookup, so that it holds back
+              // the callers nobody is waiting on without splitting the flight they share with a
+              // press. A failed lookup is held nowhere, so letting a background read through
+              // would spawn this host's CLI on every refresh for as long as the pause lasted.
+              resolved =
+                options?.allowPaused === true
+                  ? yield* Cache.get(viewerFlights, key)
+                  : yield* rateLimits.check({ provider: group.kind, host: group.host }).pipe(
+                      Effect.flatMap(() => Cache.get(viewerFlights, key)),
+                      Effect.catch((error) =>
+                        Effect.succeed<ResolvedViewer>({
+                          host: group.host,
+                          kind: group.kind,
+                          login: group.login,
+                          viewer: null,
+                          error: new PullRequestProviderError({
+                            provider: group.kind,
+                            operation: "getViewer",
+                            reason: "rate-limited",
+                            detail: error.detail,
+                            retryAt: error.retryAt,
+                            cause: error,
+                          }),
+                        }),
+                      ),
+                    );
+            }
+            for (const member of group.members) results.set(member.project.id, resolved);
+          }),
+        { concurrency: REPOSITORY_CONCURRENCY },
+      );
+      return results;
+    });
 
   /**
    * The narrowings a row can be judged by from its own fields, applied here rather than trusted
@@ -1091,6 +1238,7 @@ export const make = Effect.gen(function* () {
       host: input.project.host,
       projectId: input.project.project.id,
       projectTitle: input.project.project.title,
+      viewer: input.viewer,
       repository: input.project.repository,
       number: input.item.number,
       title: input.item.title,
@@ -1143,25 +1291,44 @@ export const make = Effect.gen(function* () {
         projectCounts.set(host, (projectCounts.get(host) ?? 0) + 1);
       }
 
-      const viewerResults = yield* resolveViewers(projects, viewerRoots);
+      const viewerByProject = yield* resolveViewers(projects, viewerRoots);
+      const viewerResults = [...new Set(viewerByProject.values())];
+      const viewerOfProject = (project: SupportedProject) =>
+        viewerByProject.get(project.project.id)?.viewer ?? null;
+      // The host's own answer is the account no project pinned; a pinned account belongs to its
+      // rows, which carry it themselves, and only stands in here when nothing else answered.
       const viewers: Record<string, string> = {};
       for (const result of viewerResults) {
-        if (result.viewer !== null) viewers[result.host] = result.viewer;
+        if (result.viewer === null) continue;
+        if (result.login === null || viewers[result.host] === undefined)
+          viewers[result.host] = result.viewer;
+      }
+      const resultsByHost = new Map<string, ResolvedViewer[]>();
+      for (const result of viewerResults) {
+        const held = resultsByHost.get(result.host);
+        if (held === undefined) resultsByHost.set(result.host, [result]);
+        else held.push(result);
       }
 
       // One summary per host, which is what the viewer lookup already answers for: two GitHub
       // hosts sign in separately, so collapsing them by kind would report one as the other.
       const providers: ReadonlyArray<PullRequestProviderSummary> = [
-        ...viewerResults.map((result) => ({
-          host: result.host,
-          kind: result.kind,
-          searchesOnHost:
-            projects.find((project) => project.host === result.host)?.api.capabilities.search ??
-            false,
-          projectCount: projectCounts.get(result.host) ?? 1,
-          configured: result.viewer !== null,
-          detail: result.error === null ? null : providerDetail(result.error),
-        })),
+        ...[...resultsByHost].map(([host, results]) => {
+          const configured = results.some((result) => result.viewer !== null);
+          const failed = results.find((result) => result.error !== null);
+          return {
+            host,
+            kind: results[0]!.kind,
+            searchesOnHost:
+              projects.find((project) => project.host === host)?.api.capabilities.search ?? false,
+            projectCount: projectCounts.get(host) ?? 1,
+            configured,
+            detail:
+              configured || failed?.error === undefined || failed.error === null
+                ? null
+                : providerDetail(failed.error),
+          };
+        }),
         ...[...unimplemented].map(([host, { kind, projectCount }]) => ({
           host,
           kind,
@@ -1180,11 +1347,11 @@ export const make = Effect.gen(function* () {
         continuation === null
           ? projects
           : projects.filter(({ cursorKey }) => continuation.has(cursorKey));
-      const readable = selected.filter(({ host }) => viewers[host] !== undefined);
+      const readable = selected.filter((project) => viewerOfProject(project) !== null);
       // A host that could not be read still has projects, and they are absent from the list.
       // Reporting them keeps "N repositories were unavailable" honest instead of dropping them.
       const unreadable = selected
-        .filter(({ host }) => viewers[host] === undefined)
+        .filter((project) => viewerOfProject(project) === null)
         .map(({ project, repository }) => ({
           projectId: project.id,
           projectTitle: project.title,
@@ -1200,7 +1367,8 @@ export const make = Effect.gen(function* () {
         // nothing has asked for nothing, and a host it never mentioned being signed out is no
         // reason to refuse it.
         const errors = viewerResults.flatMap((result) =>
-          result.error === null || !selected.some(({ host }) => host === result.host)
+          result.error === null ||
+          !selected.some((project) => viewerByProject.get(project.project.id) === result)
             ? []
             : [result.error],
         );
@@ -1229,7 +1397,7 @@ export const make = Effect.gen(function* () {
        */
       const readRepository = (project: SupportedProject): Effect.Effect<RepositoryBatch> => {
         {
-          const viewer = viewers[project.host]!;
+          const viewer = viewerOfProject(project)!;
           const key = project.cursorKey;
           const cursor = cursorOf(project);
           return project.api
@@ -1316,7 +1484,7 @@ export const make = Effect.gen(function* () {
         const separately = () =>
           Effect.forEach(chunk, readRepository, { concurrency: REPOSITORY_CONCURRENCY });
         if (readAcross === undefined) return separately();
-        const viewer = viewers[first.host]!;
+        const viewer = viewerOfProject(first)!;
         const cursor = cursorOf(first);
         return readAcross({
           cwd: first.project.workspaceRoot,
@@ -1421,7 +1589,8 @@ export const make = Effect.gen(function* () {
           separate.push(project);
           continue;
         }
-        const key = `${project.host}\n${cursorOf(project)?.updatedBefore ?? ""}`;
+        // Two accounts on one host are two searches: the host answers as whoever asks.
+        const key = `${project.host}\n${viewerByProject.get(project.project.id)?.login ?? ""}\n${cursorOf(project)?.updatedBefore ?? ""}`;
         const group = together.get(key);
         if (group === undefined) together.set(key, [project]);
         else group.push(project);
@@ -1464,7 +1633,7 @@ export const make = Effect.gen(function* () {
         credential !== null
           ? Effect.succeed(credential.viewer)
           : resolveViewers([project], new Map()).pipe(
-              Effect.map(([resolved]) => resolved?.viewer ?? null),
+              Effect.map((resolved) => resolved.get(project.project.id)?.viewer ?? null),
             ),
       ),
     );
@@ -1475,7 +1644,8 @@ export const make = Effect.gen(function* () {
     const host = input.host.toLowerCase();
     const { supported } = yield* listWorkspaceProjects({ host });
     const project = supported.find((candidate) => candidate.api.kind === "github");
-    const api = registry.get("github");
+    // The project's own api carries its pinned account; the registry's does not.
+    const api = project?.api;
     if (project === undefined || api?.getRoutingIdentity === undefined) {
       return yield* new PullRequestUnavailableError({ reason: "provider-unsupported" });
     }
@@ -1500,7 +1670,7 @@ export const make = Effect.gen(function* () {
           detail: "The GitHub account could not be verified before starting the operation.",
         });
       const project = yield* requireProject(input).pipe(Effect.mapError(rejected));
-      const api = project.api.kind === "github" ? registry.get("github") : null;
+      const api = project.api.kind === "github" ? project.api : null;
       if (
         api?.withVerifiedCredential === undefined ||
         input.host?.toLowerCase() !== project.host.toLowerCase()
@@ -1521,7 +1691,7 @@ export const make = Effect.gen(function* () {
 
   const routing = Effect.fn("PullRequestService.routing")(function* (input: PullRequestRef) {
     const project = yield* requireProject(input);
-    const api = project.api.kind === "github" ? registry.get("github") : null;
+    const api = project.api.kind === "github" ? project.api : null;
     if (api?.getRoutingIdentity === undefined) {
       return yield* new PullRequestUnavailableError({ reason: "provider-unsupported" });
     }
@@ -1850,10 +2020,11 @@ export const make = Effect.gen(function* () {
     operation: string,
   ): Effect.Effect<string | null, PullRequestError> =>
     resolveViewers([project], new Map(), { allowPaused: true }).pipe(
-      Effect.flatMap(([resolved]) => {
-        const error = resolved?.error ?? null;
+      Effect.flatMap((resolved) => {
+        const own = resolved.get(project.project.id);
+        const error = own?.error ?? null;
         return error === null
-          ? Effect.succeed(resolved?.viewer ?? null)
+          ? Effect.succeed(own?.viewer ?? null)
           : Effect.fail(toPullRequestError(operation)(error));
       }),
     );
@@ -3114,7 +3285,7 @@ export const make = Effect.gen(function* () {
     } else {
       listingsEpoch = ++epochCounter;
       everyFileRevisionEpoch = ++epochCounter;
-      viewersByHost.clear();
+      viewersByAccount.clear();
       yield* Cache.invalidateAll(viewerFlights);
     }
     if (options?.notifyReaders) {

@@ -24,6 +24,11 @@ import * as PullRequestFilesViewed from "../persistence/PullRequestFilesViewed.t
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as SourceControlRateLimit from "../sourceControl/SourceControlRateLimit.ts";
 import { ForgejoCli } from "../sourceControl/ForgejoCli.ts";
+import {
+  PinnedSourceControlAccount,
+  SourceControlAccountUnsupportedError,
+} from "../sourceControl/SourceControlAccount.ts";
+import * as SourceControlAccountResolver from "../sourceControl/SourceControlAccountResolver.ts";
 import * as ForgejoPullRequestProvider from "./ForgejoPullRequestProvider.ts";
 import {
   PullRequestProviderError,
@@ -401,6 +406,7 @@ function makeService(input: {
   readonly projects: ReadonlyArray<OrchestrationProjectShell>;
   readonly providers: ReadonlyArray<PullRequestProviderApi>;
   readonly resolveHandle?: SourceControlProviderRegistry.SourceControlProviderRegistry["Service"]["resolveHandle"];
+  readonly resolveAccount?: SourceControlAccountResolver.SourceControlAccountResolver["Service"]["resolve"];
 }) {
   // Built into the test's own scope rather than provided call by call: the marks store owns a
   // database, and `Effect.provide` would close it the moment the service was handed back.
@@ -408,6 +414,9 @@ function makeService(input: {
     Layer.build(
       Layer.mergeAll(
         Layer.succeed(PullRequestProviderRegistry, fromProviders(input.providers)),
+        Layer.mock(SourceControlAccountResolver.SourceControlAccountResolver)({
+          resolve: input.resolveAccount ?? (() => Effect.succeed(null)),
+        }),
         Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
           resolveLink: () => undefined,
           resolveHandle:
@@ -434,6 +443,161 @@ function makeService(input: {
     (context) => Effect.provideContext(PullRequestService.make, context),
   );
 }
+
+it.effect("runs a project's provider calls as its pinned account", () =>
+  Effect.gen(function* () {
+    const resolved: Array<string> = [];
+    const service = yield* makeService({
+      projects: [
+        project({ id: "p1", title: "work", workspaceRoot: "/work", repository: "acme/web" }),
+        project({ id: "p2", title: "home", workspaceRoot: "/home", repository: "maria/site" }),
+      ],
+      providers: [
+        fakeProvider("github", {
+          // The pin reaches the provider through its context, not through the call input.
+          getRoutingIdentity: () =>
+            Effect.gen(function* () {
+              const pin = yield* PinnedSourceControlAccount;
+              return {
+                accountId: pin === null ? "0" : "1",
+                viewer: pin?.login ?? "active-account",
+              };
+            }),
+          withVerifiedCredential: (_, use) =>
+            Effect.gen(function* () {
+              const pin = yield* PinnedSourceControlAccount;
+              return yield* use({
+                accountId: pin === null ? "0" : "1",
+                viewer: pin?.login ?? "active-account",
+                credentialFingerprint: "credential",
+              });
+            }),
+        }),
+      ],
+      resolveAccount: (input) =>
+        Effect.sync(() => {
+          resolved.push(`${input.canonicalKey}@${input.host}`);
+          return input.canonicalKey === "github.com/acme/web"
+            ? { host: input.host, login: "maria-work" }
+            : null;
+        }),
+    });
+    const pinned = yield* service.routing({
+      projectId: "p1" as ProjectId,
+      repository: "acme/web",
+      number: 1,
+    });
+    assert.strictEqual(pinned.viewer, "maria-work");
+    const unpinned = yield* service.routing({
+      projectId: "p2" as ProjectId,
+      repository: "maria/site",
+      number: 1,
+    });
+    assert.strictEqual(unpinned.viewer, "active-account");
+    assert.deepStrictEqual(resolved, [
+      "github.com/acme/web@github.com",
+      "github.com/maria/site@github.com",
+    ]);
+    let seen: string | null = null;
+    yield* service.withRoutingCredential(
+      {
+        projectId: "p1" as ProjectId,
+        repository: "acme/web",
+        number: 1,
+        host: "github.com",
+        expectedAccountId: "1",
+      },
+      Effect.sync(() => {
+        seen = "ran";
+      }),
+    );
+    assert.strictEqual(seen, "ran");
+  }),
+);
+
+it.effect("reads each project as its own account and reports the host's active one", () =>
+  Effect.gen(function* () {
+    const viewerLookups: Array<string> = [];
+    const service = yield* makeService({
+      projects: [
+        project({ id: "work", title: "work", workspaceRoot: "/work", repository: "acme/web" }),
+        project({ id: "home", title: "home", workspaceRoot: "/home", repository: "maria/site" }),
+        project({ id: "other", title: "other", workspaceRoot: "/other", repository: "acme/api" }),
+      ],
+      providers: [
+        fakeProvider("github", {
+          getViewer: (input) =>
+            Effect.gen(function* () {
+              const pin = yield* PinnedSourceControlAccount;
+              viewerLookups.push(`${input.cwd}:${pin?.login ?? "active"}`);
+              return pin?.login ?? "bilal";
+            }),
+          listChangeRequests: (input) =>
+            Effect.succeed({
+              items: [
+                {
+                  ...changeRequest(1, "2026-07-02T00:00:00Z"),
+                  author: { login: input.viewer ?? "nobody", name: null, avatarUrl: null },
+                },
+              ],
+              truncated: false,
+              continues: true,
+            }),
+        }),
+      ],
+      resolveAccount: (input) =>
+        Effect.succeed(
+          input.canonicalKey === "github.com/acme/web"
+            ? { host: input.host, login: "maria-work" }
+            : null,
+        ),
+    });
+
+    const result = yield* service.list({ state: "open" });
+
+    // The host reports the active account, and the pinned project's rows carry their own.
+    assert.deepStrictEqual(result.viewers, { "github.com": "bilal" });
+    assert.deepStrictEqual(
+      result.entries.map((entry) => [entry.projectId, entry.viewer, entry.author?.login]),
+      [
+        ["work", "maria-work", "maria-work"],
+        ["home", "bilal", "bilal"],
+        ["other", "bilal", "bilal"],
+      ],
+    );
+    // One lookup per host and account, not per project.
+    assert.deepStrictEqual(viewerLookups.toSorted(), ["/home:active", "/work:maria-work"]);
+    assert.strictEqual(result.providers.length, 1);
+    assert.strictEqual(result.providers[0]?.configured, true);
+  }),
+);
+
+it.effect("fails a project's calls when its pinned account cannot be honored", () =>
+  Effect.gen(function* () {
+    const service = yield* makeService({
+      projects: [
+        project({
+          id: "p1",
+          title: "ops",
+          workspaceRoot: "/ops",
+          repository: "group/ops",
+          provider: "gitlab",
+        }),
+      ],
+      providers: [fakeProvider("gitlab")],
+      resolveAccount: (input) =>
+        new SourceControlAccountUnsupportedError({
+          provider: input.kind,
+          login: "maria",
+          reason: "pinning would require T3 Code to store credentials.",
+        }),
+    });
+    const error = yield* Effect.flip(
+      service.summary({ projectId: "p1" as ProjectId, repository: "group/ops", number: 1 }),
+    );
+    assert.include(error.message, "store credentials");
+  }),
+);
 
 it.effect("refines unknown self-hosted GitLab projects before listing merge requests", () =>
   Effect.gen(function* () {

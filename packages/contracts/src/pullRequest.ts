@@ -505,6 +505,12 @@ export const PullRequestListEntry = Schema.Struct({
   host: TrimmedNonEmptyString,
   projectId: ProjectId,
   projectTitle: TrimmedNonEmptyString,
+  /**
+   * The account this row was read as. It is `viewers[host]` unless the project pins another
+   * account on the host, and involvement is judged against it rather than the host's answer.
+   * Optional so a listing held from an older server still decodes.
+   */
+  viewer: Schema.optional(TrimmedNonEmptyString),
   repository: TrimmedNonEmptyString,
   number: PositiveInt,
   title: TrimmedNonEmptyString,
