@@ -19,6 +19,7 @@ import * as BitbucketApi from "./BitbucketApi.ts";
 import * as GitHubCli from "./GitHubCli.ts";
 import * as GitLabCli from "./GitLabCli.ts";
 import * as ForgejoCli from "./ForgejoCli.ts";
+import { PinnedSourceControlAccount } from "./SourceControlAccount.ts";
 import * as ForgejoSourceControlProvider from "./ForgejoSourceControlProvider.ts";
 import * as ForgejoPullRequestProvider from "../pullRequest/ForgejoPullRequestProvider.ts";
 import * as SourceControlDiscovery from "./SourceControlDiscovery.ts";
@@ -696,6 +697,42 @@ it.effect("discovers Forgejo accounts and retains the server port", () =>
   }),
 );
 
+it.effect("breaks a Forgejo login tie with the pinned account instead of the tea default", () =>
+  Effect.gen(function* () {
+    const logins = ForgejoCli.parseForgejoLogins(
+      yield* encodeJsonEffect([
+        { name: "work", url: "https://codeberg.org", user: "maria-work", default: "true" },
+        { name: "home", url: "https://codeberg.org", user: "maria", default: "false" },
+        { name: "elsewhere", url: "https://forgejo.local", user: "maria", default: "false" },
+      ]),
+    );
+    const remote = ForgejoCli.parseForgejoRemote("https://codeberg.org/maria/project.git");
+    assert.isNotNull(remote);
+    // Without a pin the global default still wins the tie.
+    assert.strictEqual(ForgejoCli.matchForgejoLogin(logins, remote!)?.name, "work");
+    // A pin names the user or the tea alias.
+    assert.strictEqual(
+      ForgejoCli.matchForgejoLogin(logins, remote!, undefined, false, "maria")?.name,
+      "home",
+    );
+    assert.strictEqual(
+      ForgejoCli.matchForgejoLogin(logins, remote!, undefined, false, "home")?.name,
+      "home",
+    );
+    // A pin that matches no login on this host falls back to the default.
+    assert.strictEqual(
+      ForgejoCli.matchForgejoLogin(logins, remote!, undefined, false, "nobody")?.name,
+      "work",
+    );
+    // A pin never pulls in a login from another host.
+    const other = ForgejoCli.parseForgejoRemote("https://forgejo.local/maria/project.git");
+    assert.strictEqual(
+      ForgejoCli.matchForgejoLogin(logins, other!, undefined, false, "maria-work")?.name,
+      "elsewhere",
+    );
+  }),
+);
+
 it.effect("does not choose a default Forgejo login across ambiguous SSH server ports", () =>
   Effect.gen(function* () {
     const logins = ForgejoCli.parseForgejoLogins(
@@ -814,6 +851,67 @@ it.effect("rejects HTTP failures even when tea exits successfully", () =>
                   ]),
                 )
               : processOutput('{"message":"not found"}', { stderr: "HTTP/1.1 404 Not Found\n" }),
+          );
+        },
+      }),
+    ),
+  ),
+);
+
+it.effect("hands tea the pinned login when several logins share the repository host", () =>
+  Effect.gen(function* () {
+    const cli = yield* ForgejoCli.make;
+    const result = yield* cli
+      .api({
+        cwd: "/repo",
+        repository: "http://forgejo.local:3000/maria/project",
+        path: "repos/maria/project/pulls",
+      })
+      .pipe(
+        Effect.provideService(PinnedSourceControlAccount, {
+          host: "forgejo.local:3000",
+          login: "maria",
+        }),
+      );
+    assert.strictEqual(result.stdout, "[]");
+  }).pipe(
+    Effect.provideService(
+      FileSystem.FileSystem,
+      FileSystem.makeNoop({
+        exists: () => Effect.succeed(false),
+      }),
+    ),
+    Effect.provideService(
+      HttpClient.HttpClient,
+      HttpClient.make(() => {
+        throw new Error("tea must handle its own HTTP request");
+      }),
+    ),
+    Effect.provide(
+      Layer.mock(VcsProcess.VcsProcess)({
+        run: (input) => {
+          if (input.args[0] === "api") {
+            assert.deepStrictEqual(input.args.slice(0, 4), ["api", "--include", "--login", "home"]);
+          }
+          return Effect.succeed(
+            input.args[0] === "login"
+              ? processOutput(
+                  encodeJson([
+                    {
+                      name: "work",
+                      url: "http://forgejo.local:3000",
+                      user: "maria-work",
+                      default: "true",
+                    },
+                    {
+                      name: "home",
+                      url: "http://forgejo.local:3000",
+                      user: "maria",
+                      default: "false",
+                    },
+                  ]),
+                )
+              : processOutput("[]", { stderr: "HTTP/1.1 200 OK\n" }),
           );
         },
       }),

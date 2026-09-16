@@ -14,6 +14,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import { decodeJsonResult } from "@t3tools/shared/schemaJson";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
+import { PinnedSourceControlAccount } from "./SourceControlAccount.ts";
 import { collectUint8StreamText } from "../stream/collectUint8StreamText.ts";
 import type { SourceControlProviderContext } from "./SourceControlProvider.ts";
 
@@ -178,11 +179,17 @@ export function parseForgejoRemote(value: string) {
     : null;
 }
 
+/** A pinned account names a login by its tea alias or by the user it signs in as. */
+function isPinnedForgejoLogin(login: typeof ForgejoLoginSchema.Type, pinnedLogin: string) {
+  return login.name === pinnedLogin || login.user === pinnedLogin;
+}
+
 export function matchForgejoLogin(
   logins: ReturnType<typeof parseForgejoLogins>,
   remote: NonNullable<ReturnType<typeof parseForgejoRemote>>,
   requestedHost?: string,
   hostOnly = false,
+  pinnedLogin?: string,
 ) {
   const matches = [
     ...new Map(
@@ -204,11 +211,17 @@ export function matchForgejoLogin(
         .map((login) => [login.name, login]),
     ).values(),
   ];
-  return matches.length === 1
-    ? matches[0]
-    : new Set(matches.map((login) => login.url)).size === 1
-      ? matches.find((login) => login.default === "true")
-      : undefined;
+  if (matches.length === 1) return matches[0];
+  // Several logins on one host: the project's pinned account decides, and only without one
+  // does the tea default, which is global, get to.
+  const pinned =
+    pinnedLogin === undefined
+      ? undefined
+      : matches.find((login) => isPinnedForgejoLogin(login, pinnedLogin));
+  if (pinned !== undefined) return pinned;
+  return new Set(matches.map((login) => login.url)).size === 1
+    ? matches.find((login) => login.default === "true")
+    : undefined;
 }
 
 export const make = Effect.gen(function* () {
@@ -556,10 +569,20 @@ export const make = Effect.gen(function* () {
     });
     const requestedHost = input.host ?? input.context?.requestedHost;
     const matchHostOnly = hostOnly || (!!input.host && !remote?.path);
+    const pinnedLogin = (yield* PinnedSourceControlAccount)?.login;
     const selectLogin = (logins: ReturnType<typeof parseForgejoLogins>) =>
       remote
-        ? matchForgejoLogin(logins, remote, remote.ssh ? requestedHost : undefined, matchHostOnly)
-        : (logins.find((item) => item.default === "true") ??
+        ? matchForgejoLogin(
+            logins,
+            remote,
+            remote.ssh ? requestedHost : undefined,
+            matchHostOnly,
+            pinnedLogin,
+          )
+        : ((pinnedLogin === undefined
+            ? undefined
+            : logins.find((item) => isPinnedForgejoLogin(item, pinnedLogin))) ??
+          logins.find((item) => item.default === "true") ??
           (new Set(logins.map((item) => item.name)).size === 1 ? logins[0] : undefined));
     let login = selectLogin(fjLogins);
     let command: "fj" | "tea" = "fj";
@@ -568,7 +591,13 @@ export const make = Effect.gen(function* () {
       fjLogins.some(
         (item) =>
           !remote ||
-          matchForgejoLogin([item], remote, remote.ssh ? requestedHost : undefined, matchHostOnly),
+          matchForgejoLogin(
+            [item],
+            remote,
+            remote.ssh ? requestedHost : undefined,
+            matchHostOnly,
+            pinnedLogin,
+          ),
       )
     ) {
       const available = yield* execute({ command: "fj", cwd: input.cwd, args: ["version"] }).pipe(

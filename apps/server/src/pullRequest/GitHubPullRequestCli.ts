@@ -39,6 +39,7 @@ import {
 } from "@t3tools/contracts";
 
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
+import { PinnedSourceControlAccount } from "../sourceControl/SourceControlAccount.ts";
 import * as GitHubGraphQlBudget from "../sourceControl/githubGraphQlBudget.ts";
 import * as SourceControlRateLimit from "../sourceControl/SourceControlRateLimit.ts";
 import {
@@ -1113,6 +1114,9 @@ export const make = Effect.gen(function* () {
       const host = input.host.toLowerCase();
       const pinned = yield* GitHubCli.PinnedGitHubCredential;
       if (pinned !== null && pinned.host !== host) return yield* unavailable();
+      // Without `--user`, gh hands out whichever account `gh auth switch` last made active.
+      const account = yield* PinnedSourceControlAccount;
+      const user = account !== null && account.host === host ? ["--user", account.login] : [];
       // Only the digest is retained. Never attach credential lookup output to an error.
       const token =
         pinned !== null
@@ -1120,7 +1124,7 @@ export const make = Effect.gen(function* () {
           : (yield* github
               .execute({
                 cwd: input.cwd,
-                args: ["auth", "token", "--hostname", host],
+                args: ["auth", "token", "--hostname", host, ...user],
                 env: { GH_DEBUG: "" },
               })
               .pipe(Effect.mapError(unavailable))).stdout.trim();

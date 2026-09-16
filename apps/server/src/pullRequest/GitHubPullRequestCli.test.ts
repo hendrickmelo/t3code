@@ -9,6 +9,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
+import { PinnedSourceControlAccount } from "../sourceControl/SourceControlAccount.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as SourceControlRateLimit from "../sourceControl/SourceControlRateLimit.ts";
 import * as GitHubGraphQlBudget from "../sourceControl/githubGraphQlBudget.ts";
@@ -2836,6 +2837,43 @@ layer("GitHubPullRequestCli.layer", (it) => {
       expect(login).toBe("enterprise-user");
       expect(callAt(0).args).toEqual(["auth", "token", "--hostname", "github.acme.com"]);
       expect(callAt(1).args).toEqual(["api", "user", "--hostname", "github.acme.com"]);
+    }),
+  );
+
+  it.effect("selects the pinned account when it lives on the requested host", () =>
+    Effect.gen(function* () {
+      mockedExecute
+        .mockReturnValueOnce(Effect.succeed(output("pinned-user-credential")))
+        .mockReturnValueOnce(Effect.succeed(output('{"id":789,"login":"maria-work"}')))
+        .mockReturnValueOnce(Effect.succeed(output("other-host-credential")))
+        .mockReturnValueOnce(Effect.succeed(output('{"id":790,"login":"active-user"}')));
+      const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
+
+      const pinned = yield* cli.getViewerLogin({ cwd: "/w", host: "github.pinned.test" }).pipe(
+        Effect.provideService(PinnedSourceControlAccount, {
+          host: "github.pinned.test",
+          login: "maria-work",
+        }),
+      );
+      expect(pinned).toBe("maria-work");
+      expect(callAt(0).args).toEqual([
+        "auth",
+        "token",
+        "--hostname",
+        "github.pinned.test",
+        "--user",
+        "maria-work",
+      ]);
+
+      // A pin for another host does not select anything on this one.
+      const unpinned = yield* cli.getViewerLogin({ cwd: "/w", host: "github.unpinned.test" }).pipe(
+        Effect.provideService(PinnedSourceControlAccount, {
+          host: "github.pinned.test",
+          login: "maria-work",
+        }),
+      );
+      expect(unpinned).toBe("active-user");
+      expect(callAt(2).args).toEqual(["auth", "token", "--hostname", "github.unpinned.test"]);
     }),
   );
 
