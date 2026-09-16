@@ -57,6 +57,7 @@ import {
   type Icon,
 } from "../Icons";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
+import { SourceControlAccountRules } from "./SourceControlAccountRules";
 import { SourceControlWritingSettingsSection } from "./SourceControlWritingSettings";
 import {
   PolicyTooltip,
@@ -601,6 +602,7 @@ export function SourceControlSettingsPanel() {
         />
       )}
 
+      <SourceControlAccountRules discovery={result} />
       <SourceControlWritingSettingsSection />
     </SettingsPageContainer>
   );

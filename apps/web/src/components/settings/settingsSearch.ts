@@ -680,6 +680,16 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "environment-defaults",
   },
   {
+    id: "source-control-account-rules",
+    title: "Account rules",
+    to: "/settings/source-control",
+    searchTerms: [
+      "github account login identity multiple accounts organisation organization pin override which account repository owner host wildcard",
+    ],
+    environmentOnly: true,
+    scope: "environment-defaults",
+  },
+  {
     id: "source-control-writing-style",
     title: "Source control writing style",
     to: "/settings/source-control",

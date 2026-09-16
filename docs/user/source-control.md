@@ -41,8 +41,18 @@ for that server.
 
 When more than one account is signed in on the same host, such as two `gh auth login`
 accounts on github.com, every repository uses whichever account the CLI has active. To use a
-particular account for a repository, name it in `sourceControlAccountOverrides` in the server's
-`settings.json`, keyed by `host/owner/repo`:
+particular account instead, add an account rule under **Settings → Source Control → Account
+rules**. A rule names a repository as `host/owner/repository` and picks one of the signed-in
+accounts.
+
+Use `*` in place of a path segment to cover a whole organisation, and a host on its own as the
+default for everything else on it. The most specific rule wins, so the order of the rules does
+not matter. A rule covers every project and worktree of the repositories it names, and each rule
+says how many repositories it decides. The Repositories list below the rules shows what every
+repository in the workspace resolves to and which rule said so.
+
+Rules are stored per server as `sourceControlAccountOverrides` in `settings.json`, so they can
+also be edited there directly:
 
 ```json
 {
@@ -52,10 +62,6 @@ particular account for a repository, name it in `sourceControlAccountOverrides` 
   }
 }
 ```
-
-Use `*` in place of a path segment to cover a whole organisation, and a host on its own as the
-default for everything else on it. The most specific entry wins, so the order of the file does
-not matter. An entry covers every project and worktree of the repositories it names.
 
 A pinned account is used by the pull request page and by the Git panel's source control actions
 alike, so a branch pushed and a pull request opened from one project use one identity. Anything

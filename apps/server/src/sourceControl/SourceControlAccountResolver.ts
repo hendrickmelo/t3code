@@ -1,14 +1,16 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { matchSourceControlAccountOverride } from "@t3tools/shared/sourceControl";
+import {
+  matchSourceControlAccountOverride,
+  sourceControlAccountSupport,
+} from "@t3tools/shared/sourceControl";
 import type { SourceControlProviderKind } from "@t3tools/contracts";
 
 import * as ServerSettings from "../serverSettings.ts";
 import {
   type PinnedSourceControlAccountValue,
   SourceControlAccountUnsupportedError,
-  sourceControlAccountSupport,
 } from "./SourceControlAccount.ts";
 
 /**

@@ -20,45 +20,6 @@ export const PinnedSourceControlAccount = Context.Reference<PinnedSourceControlA
   { defaultValue: () => null },
 );
 
-export type SourceControlAccountSupport =
-  | { readonly supported: true }
-  | { readonly supported: false; readonly reason: string };
-
-/**
- * Whether a provider can act as a named account without T3 Code holding a credential.
- * The unsupported providers only read a token from the environment, so pinning an account
- * for them would mean storing credentials, which the server deliberately does not do.
- */
-export function sourceControlAccountSupport(
-  kind: SourceControlProviderKind,
-): SourceControlAccountSupport {
-  switch (kind) {
-    case "github":
-    case "forgejo":
-      return { supported: true };
-    case "gitlab":
-      return {
-        supported: false,
-        reason:
-          "glab reads its token from the environment (GITLAB_TOKEN) and has no per-account selection; pinning would require T3 Code to store credentials.",
-      };
-    case "azure-devops":
-      return {
-        supported: false,
-        reason:
-          "az devops reads AZURE_DEVOPS_EXT_PAT and has no account selection; pinning would require T3 Code to store credentials.",
-      };
-    case "bitbucket":
-      return {
-        supported: false,
-        reason:
-          "Bitbucket uses server-wide environment credentials and has no account selection; pinning would require T3 Code to store credentials.",
-      };
-    case "unknown":
-      return { supported: false, reason: "The repository host is not a known provider." };
-  }
-}
-
 export class SourceControlAccountUnsupportedError extends Schema.TaggedError<SourceControlAccountUnsupportedError>()(
   "SourceControlAccountUnsupportedError",
   {

@@ -1127,7 +1127,8 @@ export const ServerSettings = Schema.Struct({
    * Source control account login per repository, keyed by the repository's canonical key
    * (`host/owner/repo`), overriding the account the server inferred for every project of that
    * repository. `*` stands for a path segment, so `host/owner/*` pins a whole organisation, and
-   * the most specific key wins. Edited in the settings file; there is no client control for it.
+   * the most specific key wins. Environment-wide rather than project-scoped: it describes which
+   * login a host is used as on this machine, which every project of a repository shares.
    */
   sourceControlAccountOverrides: Schema.Record(TrimmedNonEmptyString, TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
