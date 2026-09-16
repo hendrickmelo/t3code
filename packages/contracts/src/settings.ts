@@ -1123,6 +1123,15 @@ export const ServerSettings = Schema.Struct({
   projectAutoPullOverrides: Schema.Record(ProjectId, Schema.Boolean).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  /**
+   * Source control account login per repository, keyed by the repository's canonical key
+   * (`host/owner/repo`), overriding the account the server inferred for every project of that
+   * repository. `*` stands for a path segment, so `host/owner/*` pins a whole organisation, and
+   * the most specific key wins. Edited in the settings file; there is no client control for it.
+   */
+  sourceControlAccountOverrides: Schema.Record(TrimmedNonEmptyString, TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
   defaultModelSelection: Schema.NullOr(ModelSelection).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
