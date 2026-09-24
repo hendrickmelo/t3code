@@ -1,5 +1,6 @@
 import * as Mime from "effect/unstable/http/Mime";
 import { githubMediaFileName } from "@t3tools/shared/githubMedia";
+import { normalizeGitRemoteUrl } from "@t3tools/shared/git";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -13,6 +14,8 @@ import {
 } from "effect/unstable/http";
 
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
+import * as SourceControlAccountResolver from "../sourceControl/SourceControlAccountResolver.ts";
+import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 
 /**
  * Exactly the hosts the credential is for. Everything a redirect leads to — the presigned
@@ -63,24 +66,66 @@ const SVG_CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'unsafe-inlin
  */
 const tokenCache = new Map<string, { readonly at: number; readonly token: Redacted.Redacted }>();
 
+/**
+ * The account this checkout's repository is pinned to, or null to read as whichever account the
+ * CLI has active. Both services are optional: this route is also exercised without the source
+ * control stack built, and there the media reads the way it did before pinning existed.
+ */
+const pinnedLogin = Effect.fn("GitHubMediaFetch.pinnedLogin")(function* (input: {
+  readonly cwd: string;
+  readonly host: string;
+}) {
+  const registry = yield* Effect.serviceOption(
+    SourceControlProviderRegistry.SourceControlProviderRegistry,
+  );
+  const accounts = yield* Effect.serviceOption(
+    SourceControlAccountResolver.SourceControlAccountResolver,
+  );
+  if (Option.isNone(registry) || Option.isNone(accounts)) return null;
+  // Cached per directory by the registry, so the media requests behind one pull request body
+  // detect the remote once rather than each spawning git.
+  const remoteUrl = yield* registry.value.resolveHandle({ cwd: input.cwd }).pipe(
+    Effect.map((handle) => handle.context?.remoteUrl),
+    Effect.orElseSucceed(() => undefined),
+  );
+  if (remoteUrl === undefined) return null;
+  const canonicalKey = normalizeGitRemoteUrl(remoteUrl);
+  const account = yield* accounts.value
+    .resolve({ kind: "github", host: canonicalKey.split("/")[0] ?? "", canonicalKey })
+    // A rule the provider cannot honor is reported where the pull request itself is read.
+    // Turning it into a broken image here would explain nothing.
+    .pipe(Effect.orElseSucceed(() => null));
+  // Enterprise media is not served from these hosts, so a pin for another host is not this
+  // request's: read as the active account rather than send a token github.com would reject.
+  return account !== null && account.host === input.host ? account.login : null;
+});
+
 const githubToken = Effect.fn("GitHubMediaFetch.githubToken")(function* (input: {
   readonly cwd: string;
   readonly host: string;
 }) {
-  // `gh` stores a token per host, not per repository, so the directory it runs in is not part
-  // of the answer and must not fragment the cache a client could otherwise churn. This route
-  // pins no credential; if it ever does, the pin belongs in this key.
-  const key = input.host;
+  const login = yield* pinnedLogin(input);
+  // `gh` stores a token per host and account, not per repository, so the directory it runs in is
+  // not part of the answer and must not fragment the cache a client could otherwise churn. The
+  // pinned login is part of it: two repositories here may read as two different accounts.
+  const key = login === null ? input.host : `${input.host}\0${login}`;
   const now = yield* Clock.currentTimeMillis;
   const cached = tokenCache.get(key);
   if (cached !== undefined && now - cached.at < TOKEN_CACHE_TTL_MS) return cached.token;
   const github = yield* GitHubCli.GitHubCli;
   // No credential is a normal state: a public asset still loads, and a private one fails the way
-  // it does in a browser that is not signed in.
+  // it does in a browser that is not signed in. Without `--user` a pinned repository would read
+  // as whichever account `gh auth switch` last made active.
   const token = yield* github
     .execute({
       cwd: input.cwd,
-      args: ["auth", "token", "--hostname", input.host],
+      args: [
+        "auth",
+        "token",
+        "--hostname",
+        input.host,
+        ...(login === null ? [] : ["--user", login]),
+      ],
       env: { GH_DEBUG: "" },
     })
     .pipe(

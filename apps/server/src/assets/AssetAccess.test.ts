@@ -2,7 +2,12 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeHttpPlatform from "@effect/platform-node/NodeHttpPlatform";
 import * as NodeFSP from "node:fs/promises";
-import { AssetAccessError, AssetPreviewTypeValidationError, ThreadId } from "@t3tools/contracts";
+import {
+  AssetAccessError,
+  AssetPreviewTypeValidationError,
+  DEFAULT_SERVER_SETTINGS,
+  ThreadId,
+} from "@t3tools/contracts";
 import { PROJECT_FAVICON_FALLBACK_MARKER } from "@t3tools/shared/projectFavicon";
 import { describe, expect, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
@@ -18,6 +23,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import { vi } from "vite-plus/test";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
@@ -28,6 +34,8 @@ import * as NativeAppIconResolver from "./NativeAppIconResolver.ts";
 import { openMediaFile } from "./MediaFile.ts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
+import * as SourceControlAccountResolver from "../sourceControl/SourceControlAccountResolver.ts";
+import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import { githubMediaResponse } from "./GitHubMediaFetch.ts";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -89,6 +97,98 @@ describe("AssetAccess", () => {
                 status: request.headers.authorization ? 200 : 404,
                 headers: { "content-type": "image/png" },
               }),
+            ),
+          );
+        }),
+      ),
+      Effect.scoped,
+    );
+  });
+
+  it.effect("reads a pinned repository's media as that repository's account", () => {
+    const remotes: Record<string, string> = {
+      "/pinned": "https://github.com/autonomix-medical/portal.git",
+      "/other": "https://github.com/hendrickmelo/cantinho.git",
+    };
+    const requestedUsers: Array<string | null> = [];
+    const authorizations: Array<string | undefined> = [];
+    return Effect.gen(function* () {
+      const media = (cwd: string) =>
+        githubMediaResponse(
+          {
+            url: "https://raw.githubusercontent.com/owner/repo/main/shot.png",
+            cwd,
+            expiresAt: Number.MAX_SAFE_INTEGER,
+          },
+          {},
+        );
+      yield* media("/pinned");
+      yield* media("/other");
+      // The rule decides which account `gh` is asked for; without `--user` it answers with
+      // whichever one is active, which is the whole bug.
+      expect(requestedUsers).toEqual(["hmelo-amix", "hendrickmelo"]);
+      // Two accounts on one host must not share the host's cached token.
+      expect(authorizations).toEqual([
+        "Bearer token-for-hmelo-amix",
+        "Bearer token-for-hendrickmelo",
+      ]);
+    }).pipe(
+      Effect.provide(
+        Layer.mock(GitHubCli.GitHubCli)({
+          execute: (input) =>
+            Effect.sync(() => {
+              const at = input.args.indexOf("--user");
+              const user = at === -1 ? null : (input.args[at + 1] ?? null);
+              requestedUsers.push(user);
+              return {
+                exitCode: ChildProcessSpawner.ExitCode(0),
+                stdout: `token-for-${user ?? "active"}`,
+                stderr: "",
+                stdoutTruncated: false,
+                stderrTruncated: false,
+              };
+            }),
+        }),
+      ),
+      Effect.provide(
+        SourceControlAccountResolver.layer.pipe(
+          Layer.provide(
+            Layer.mock(ServerSettings.ServerSettingsService)({
+              getSettings: Effect.succeed({
+                ...DEFAULT_SERVER_SETTINGS,
+                sourceControlAccountOverrides: {
+                  "github.com/autonomix-medical/*": "hmelo-amix",
+                  "github.com/hendrickmelo/*": "hendrickmelo",
+                },
+              }),
+            }),
+          ),
+        ),
+      ),
+      Effect.provide(
+        // Only the detected remote is read here, which is what names the repository a rule can
+        // match; the provider behind it never runs.
+        Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
+          resolveLink: () => undefined,
+          resolveHandle: (input) =>
+            Effect.succeed({
+              provider: undefined as never,
+              context: {
+                provider: { kind: "github", name: "GitHub", baseUrl: "https://github.com" },
+                remoteName: "origin",
+                remoteUrl: remotes[input.cwd]!,
+              },
+            }),
+        }),
+      ),
+      Effect.provideService(
+        HttpClient.HttpClient,
+        HttpClient.make((request) => {
+          authorizations.push(request.headers.authorization);
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              new Response(null, { status: 200, headers: { "content-type": "image/png" } }),
             ),
           );
         }),
