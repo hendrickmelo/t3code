@@ -23,10 +23,15 @@ import {
   type UnknownRemoteVerdict,
 } from "@t3tools/source-control-core/server/discovery";
 import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
+import {
+  type SourceControlAccountSelection,
+  withSourceControlAccount,
+} from "@t3tools/source-control-core/server/SourceControlAccount";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import { sourceControlAccountFor } from "./sourceControlAccountRules.ts";
 
 const PROVIDER_DETECTION_CACHE_CAPACITY = 2_048;
 const PROVIDER_DETECTION_CACHE_TTL = Duration.seconds(5);
@@ -40,8 +45,14 @@ export interface SourceControlProviderRegistration {
 }
 
 export interface SourceControlProviderHandle {
+  /** Acts as `account` in every operation. */
   readonly provider: SourceControlProvider.SourceControlProvider["Service"];
   readonly context: SourceControlProvider.SourceControlProviderContext | null;
+  /**
+   * The login the checkout's account rule names, read from settings on each run so an edited
+   * rule applies to a provider held across it. Null keeps the host's own account choice.
+   */
+  readonly account: Effect.Effect<SourceControlAccountSelection | null, SourceControlProviderError>;
 }
 
 export class SourceControlProviderRegistry extends Context.Service<
@@ -189,51 +200,80 @@ class UnknownRemoteLookup {
 function bindProviderContext(
   provider: SourceControlProvider.SourceControlProvider["Service"],
   context: SourceControlProvider.SourceControlProviderContext | null,
+  account: SourceControlProviderHandle["account"],
 ): SourceControlProvider.SourceControlProvider["Service"] {
   if (context === null) {
     return provider;
   }
+  const as = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    Effect.flatMap(account, (selection) => withSourceControlAccount(selection)(effect));
+  // For the reads that cannot fail: a rule the host cannot honor is reported by the others.
+  const asIfSupported = <A, R>(effect: Effect.Effect<A, never, R>) =>
+    Effect.flatMap(
+      Effect.orElseSucceed(account, () => null),
+      (selection) => withSourceControlAccount(selection)(effect),
+    );
+  const { readChangeRequestTemplate, createsChangeRequestsIn } = provider;
 
   return SourceControlProvider.SourceControlProvider.of({
     ...provider,
+    ...(readChangeRequestTemplate === undefined
+      ? {}
+      : { readChangeRequestTemplate: (input) => asIfSupported(readChangeRequestTemplate(input)) }),
+    ...(createsChangeRequestsIn === undefined
+      ? {}
+      : { createsChangeRequestsIn: (input) => asIfSupported(createsChangeRequestsIn(input)) }),
     listChangeRequests: Effect.fnUntraced(function* (input) {
-      return yield* provider.listChangeRequests({
-        ...input,
-        context: input.context ?? context,
-      });
+      return yield* as(
+        provider.listChangeRequests({
+          ...input,
+          context: input.context ?? context,
+        }),
+      );
     }),
     getChangeRequest: Effect.fnUntraced(function* (input) {
-      return yield* provider.getChangeRequest({
-        ...input,
-        context: input.context ?? context,
-      });
+      return yield* as(
+        provider.getChangeRequest({
+          ...input,
+          context: input.context ?? context,
+        }),
+      );
     }),
     createChangeRequest: Effect.fnUntraced(function* (input) {
-      return yield* provider.createChangeRequest({
-        ...input,
-        context: input.context ?? context,
-      });
+      return yield* as(
+        provider.createChangeRequest({
+          ...input,
+          context: input.context ?? context,
+        }),
+      );
     }),
     getRepositoryCloneUrls: Effect.fnUntraced(function* (input) {
-      return yield* provider.getRepositoryCloneUrls({
-        ...input,
-        context: input.context ?? context,
-      });
+      return yield* as(
+        provider.getRepositoryCloneUrls({
+          ...input,
+          context: input.context ?? context,
+        }),
+      );
     }),
+    // A new repository has no rule yet; it is created as the host's own account.
     createRepository: Effect.fnUntraced(function* (input) {
       return yield* provider.createRepository(input);
     }),
     getDefaultBranch: Effect.fnUntraced(function* (input) {
-      return yield* provider.getDefaultBranch({
-        ...input,
-        context: input.context ?? context,
-      });
+      return yield* as(
+        provider.getDefaultBranch({
+          ...input,
+          context: input.context ?? context,
+        }),
+      );
     }),
     checkoutChangeRequest: Effect.fnUntraced(function* (input) {
-      return yield* provider.checkoutChangeRequest({
-        ...input,
-        context: input.context ?? context,
-      });
+      return yield* as(
+        provider.checkoutChangeRequest({
+          ...input,
+          context: input.context ?? context,
+        }),
+      );
     }),
   });
 }
@@ -320,6 +360,32 @@ export const makeWithProviders = Effect.fn("makeSourceControlProviderRegistryWit
       timeToLive: (exit) => (Exit.isSuccess(exit) ? PROVIDER_DETECTION_CACHE_TTL : Duration.zero),
     });
 
+    const accountFor = (
+      cwd: string,
+      context: SourceControlProvider.SourceControlProviderContext | null,
+    ): SourceControlProviderHandle["account"] => {
+      if (context === null) return Effect.succeed(null);
+      const kind = context.provider.kind;
+      const repositoryKey = sourceControlDefinitions.repositoryKeyFromRemote(context.remoteUrl);
+      return serverSettings.getSettings.pipe(
+        // An unreadable settings file is reported where it is read; keep the host's own account.
+        Effect.orElseSucceed(() => ({ sourceControlAccountOverrides: {} })),
+        Effect.flatMap((settings) =>
+          Effect.fromResult(sourceControlAccountFor({ settings, kind, repositoryKey })),
+        ),
+        Effect.mapError(
+          (error) =>
+            new SourceControlProviderError({
+              provider: kind,
+              operation: "selectAccount",
+              cwd,
+              detail: error.message,
+              cause: error,
+            }),
+        ),
+      );
+    };
+
     const resolveHandle: SourceControlProviderRegistry["Service"]["resolveHandle"] = (input) =>
       (input.context === undefined
         ? Cache.get(providerContextCache, input.cwd)
@@ -328,9 +394,11 @@ export const makeWithProviders = Effect.fn("makeSourceControlProviderRegistryWit
         Effect.map((context) => {
           const kind = context?.provider.kind ?? SourceControlProviderKind.make("unknown");
           const provider = providers.get(kind) ?? unsupportedProvider(kind);
+          const account = accountFor(input.cwd, context);
           return {
-            provider: bindProviderContext(provider, context),
+            provider: bindProviderContext(provider, context, account),
             context,
+            account,
           } satisfies SourceControlProviderHandle;
         }),
       );

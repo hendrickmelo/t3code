@@ -34,8 +34,13 @@ import { assetFileResponse } from "../http.ts";
 import { ASSET_ROUTE_PREFIX, issueAssetUrl, readMcpAppHtml, resolveAsset } from "./AssetAccess.ts";
 import * as NativeAppIconResolver from "./NativeAppIconResolver.ts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
-import { fakeSourceControlDriverInstance } from "@t3tools/source-control-testing/fakeSourceControlDriver";
+import { SelectedSourceControlAccount } from "@t3tools/source-control-core/server/SourceControlAccount";
+import {
+  fakeSourceControlDriverInstance,
+  fakeSourceControlProvider,
+} from "@t3tools/source-control-testing/fakeSourceControlDriver";
 import * as BuiltInDrivers from "../sourceControl/builtInDrivers.ts";
+import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import { sourceControlMediaResponse } from "./sourceControlMediaResponse.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -1396,7 +1401,11 @@ describe("AssetAccess", () => {
   );
 
   it.effect("serves a host's credentialed media through that host's driver", () => {
-    const fetched: Array<{ url: string; headers: Readonly<Record<string, string>> }> = [];
+    const fetched: Array<{
+      url: string;
+      headers: Readonly<Record<string, string>>;
+      account: string | undefined;
+    }> = [];
     const url = "https://github.com/owner/repo/blob/main/docs/shot.png";
     const media = sourceControlDefinitions.mediaUrl(url)!;
     const layerDrivers = Layer.succeed(BuiltInDrivers.SourceControlDrivers, [
@@ -1405,8 +1414,8 @@ describe("AssetAccess", () => {
         instance: fakeSourceControlDriverInstance(media.definition.kind, {
           pullRequests: null,
           fetchMedia: (request) =>
-            Effect.sync(() => {
-              fetched.push(request);
+            Effect.map(SelectedSourceControlAccount, (selection) => {
+              fetched.push({ ...request, account: selection?.login });
               return HttpClientResponse.fromWeb(
                 HttpClientRequest.get(request.url),
                 new Response("bytes", { status: 206, headers: { "content-length": "5" } }),
@@ -1415,6 +1424,16 @@ describe("AssetAccess", () => {
         }),
       },
     ]);
+    // The checkout's account rule names `work`, which the media must be fetched as.
+    const layerRegistry = Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
+      resolveLink: () => undefined,
+      resolveHandle: ({ cwd }) =>
+        Effect.succeed({
+          provider: fakeSourceControlProvider("github"),
+          context: null,
+          account: Effect.succeed(cwd === "/repo" ? { host: "github.com", login: "work" } : null),
+        }),
+    });
     return Effect.gen(function* () {
       const decodeAssetCreateUrlInput = Schema.decodeEffect(AssetCreateUrlInput);
 
@@ -1438,12 +1457,14 @@ describe("AssetAccess", () => {
         range: "bytes=0-4",
         cookie: "session",
       });
-      expect(fetched).toEqual([{ url: media.fetchUrl, headers: { range: "bytes=0-4" } }]);
+      expect(fetched).toEqual([
+        { url: media.fetchUrl, headers: { range: "bytes=0-4" }, account: "work" },
+      ]);
       expect(response.status).toBe(206);
       // The upstream sent no type, so it comes from the file name the host gave the media.
       expect(response.headers["content-type"]).toBe("image/png");
       expect(response.headers["content-length"]).toBe("5");
-    }).pipe(Effect.provide(Layer.merge(layerTest, layerDrivers)), Effect.scoped);
+    }).pipe(Effect.provide(Layer.mergeAll(layerTest, layerDrivers, layerRegistry)), Effect.scoped);
   });
 
   it.effect("refuses media no host keeps behind a credential, without echoing the URL", () =>

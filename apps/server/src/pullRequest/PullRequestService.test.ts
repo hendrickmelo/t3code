@@ -31,6 +31,7 @@ import type { SourceControlProvider } from "@t3tools/source-control-core/server/
 import { isSshRemoteUrl } from "@t3tools/shared/sourceControl";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import { fakePullRequestProvider } from "@t3tools/source-control-testing/fakeSourceControlDriver";
+import { SelectedSourceControlAccount } from "@t3tools/source-control-core/server/SourceControlAccount";
 import {
   PullRequestProviderError,
   type ProviderChangeRequest,
@@ -242,6 +243,102 @@ function makeService(input: {
   );
 }
 
+const withAccountRules = (rules: Record<string, string>): ServerSettings => ({
+  ...DEFAULT_SERVER_SETTINGS,
+  sourceControlAccountOverrides: rules,
+});
+
+/** A GitHub provider whose signed-in viewer is whichever login the call was selected to act as. */
+const accountAwareGitHub = (viewerLookups: Array<string>) =>
+  fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+    getViewer: (input) =>
+      Effect.map(SelectedSourceControlAccount, (selection) => {
+        viewerLookups.push(`${input.cwd}:${selection?.login ?? "host"}`);
+        return selection?.login ?? "bilal";
+      }),
+    listChangeRequests: (input) =>
+      Effect.succeed({
+        items: [
+          {
+            ...changeRequest(1, "2026-07-02T00:00:00Z"),
+            author: { login: input.viewer, name: null, avatarUrl: null },
+          },
+        ],
+        truncated: false,
+        continues: true,
+      }),
+    getRoutingIdentity: () =>
+      Effect.map(SelectedSourceControlAccount, (selection) => ({
+        accountId: selection === null ? "0" : "1",
+        viewer: selection?.login ?? "bilal",
+      })),
+  });
+
+it.effect("reads each project as its account rule's login, one lookup per account", () =>
+  Effect.gen(function* () {
+    const viewerLookups: Array<string> = [];
+    const service = yield* makeService({
+      settings: withAccountRules({ "github.com/acme/*": "acme-bot" }),
+      projects: [
+        project({ id: "work", title: "work", workspaceRoot: "/work", repository: "acme/web" }),
+        project({ id: "home", title: "home", workspaceRoot: "/home", repository: "me/site" }),
+        project({ id: "api", title: "api", workspaceRoot: "/api", repository: "acme/api" }),
+      ],
+      providers: [accountAwareGitHub(viewerLookups)],
+    });
+
+    const result = yield* service.list({ state: "open" });
+
+    // The host reports its own account; the ruled projects' rows carry theirs.
+    assert.deepStrictEqual(result.viewers, { "github.com": "bilal" });
+    assert.deepStrictEqual(
+      result.entries
+        .map((entry) => [entry.projectId, entry.viewer, entry.author?.login])
+        .toSorted(),
+      [
+        ["api", "acme-bot", "acme-bot"],
+        ["home", "bilal", "bilal"],
+        ["work", "acme-bot", "acme-bot"],
+      ],
+    );
+    // One lookup per account; a rule's asks only from its own projects' checkouts.
+    const lookups = viewerLookups.map((lookup) => lookup.split(":"));
+    assert.deepStrictEqual(lookups.map(([, login]) => login).toSorted(), ["acme-bot", "host"]);
+    assert.include(["/work", "/api"], lookups.find(([, login]) => login === "acme-bot")?.[0]);
+    assert.strictEqual(result.providers.length, 1);
+    assert.strictEqual(result.providers[0]?.configured, true);
+
+    const routed = yield* service.routing({
+      projectId: "work" as ProjectId,
+      repository: "acme/web",
+      number: 1,
+    });
+    assert.strictEqual(routed.viewer, "acme-bot");
+  }),
+);
+
+it.effect("fails a project whose account rule its host cannot honor", () =>
+  Effect.gen(function* () {
+    const service = yield* makeService({
+      settings: withAccountRules({ "gitlab.com/group/*": "maria" }),
+      projects: [
+        project({
+          id: "ops",
+          title: "ops",
+          workspaceRoot: "/ops",
+          repository: "group/ops",
+          provider: "gitlab",
+        }),
+      ],
+      providers: [fakePullRequestProvider(SourceControlProviderKind.make("gitlab"))],
+    });
+    const error = yield* Effect.flip(
+      service.summary({ projectId: "ops" as ProjectId, repository: "group/ops", number: 1 }),
+    );
+    assert.include(error.message, "gitlab.com/group/*");
+  }),
+);
+
 it.effect("lists GitHub Enterprise PRs for a stored unknown repository after host discovery", () =>
   Effect.gen(function* () {
     const service = yield* makeService({
@@ -280,6 +377,7 @@ it.effect("lists GitHub Enterprise PRs for a stored unknown repository after hos
             },
           },
           provider: undefined as never,
+          account: Effect.succeed(null),
         });
       },
     });
@@ -320,6 +418,7 @@ it.effect("derives a legacy repository host after refining its provider", () =>
             provider: { ...context!.provider, kind: SourceControlProviderKind.make("gitlab") },
           },
           provider: undefined as never,
+          account: Effect.succeed(null),
         }),
     });
 
@@ -347,13 +446,18 @@ it.effect("tries another checkout when provider refinement remains unknown", () 
       resolveHandle: ({ cwd, context }) => {
         asked.push(cwd);
         return cwd === "/gone"
-          ? Effect.succeed({ context: context!, provider: undefined as never })
+          ? Effect.succeed({
+              context: context!,
+              provider: undefined as never,
+              account: Effect.succeed(null),
+            })
           : Effect.succeed({
               context: {
                 ...context!,
                 provider: { ...context!.provider, kind: SourceControlProviderKind.make("gitlab") },
               },
               provider: undefined as never,
+              account: Effect.succeed(null),
             });
       },
     });
@@ -1491,7 +1595,11 @@ it.effect("routes explicit Forgejo HTTP authorities through SSH checkouts after 
         ],
         resolveHandle: ({ context }) => {
           if (context?.requestedHost === undefined) {
-            return Effect.succeed({ context: context!, provider: undefined as never });
+            return Effect.succeed({
+              context: context!,
+              provider: undefined as never,
+              account: Effect.succeed(null),
+            });
           }
           assert.strictEqual(context.requestedHost, "code.example:3000");
           return Effect.succeed({
@@ -1504,6 +1612,7 @@ it.effect("routes explicit Forgejo HTTP authorities through SSH checkouts after 
               },
             },
             provider: undefined as never,
+            account: Effect.succeed(null),
           });
         },
       });
@@ -1579,6 +1688,7 @@ it.effect("names an SSH remote's web host from a later checkout when the first c
                   },
                 },
           provider: undefined as never,
+          account: Effect.succeed(null),
         }),
     });
 
@@ -3539,6 +3649,7 @@ it.effect("keeps hosted Forgejo marks with their repository instead of the servi
             },
           },
           provider: undefined as never,
+          account: Effect.succeed(null),
         }),
     });
     const first = {

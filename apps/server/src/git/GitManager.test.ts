@@ -672,7 +672,8 @@ function makeManager(input?: {
         SourceControlProviderRegistry.SourceControlProviderRegistry.of({
           resolveLink: (input) => provider.resolveLink?.(input),
           get: () => Effect.succeed(provider),
-          resolveHandle: () => Effect.succeed({ provider, context: null }),
+          resolveHandle: () =>
+            Effect.succeed({ provider, context: null, account: Effect.succeed(null) }),
           resolve: () => Effect.succeed(provider),
           discover: Effect.succeed([]),
         }),

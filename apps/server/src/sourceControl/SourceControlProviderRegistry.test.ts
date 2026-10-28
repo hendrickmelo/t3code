@@ -23,6 +23,7 @@ import type {
   SourceControlProviderDiscoverySpec,
 } from "@t3tools/source-control-core/server/discovery";
 import type * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
+import { SelectedSourceControlAccount } from "@t3tools/source-control-core/server/SourceControlAccount";
 import { fakeSourceControlProvider } from "@t3tools/source-control-testing/fakeSourceControlDriver";
 import * as TestSourceControlHost from "@t3tools/source-control-testing/TestSourceControlHost";
 
@@ -91,6 +92,8 @@ function makeRegistry(input: {
   readonly discovery?: ReadonlyArray<SourceControlProviderDiscoverySpec>;
   readonly run?: SourceControlHost.SourceControlHost["Service"]["process"]["run"];
   readonly settings?: Partial<ServerSettings.ServerSettingsService["Service"]>;
+  readonly accountRules?: Record<string, string>;
+  readonly providers?: typeof PROVIDERS;
 }) {
   const driver = {
     listRemotes: () =>
@@ -110,7 +113,7 @@ function makeRegistry(input: {
 
   const discovery = input.discovery ?? [claimingCli("gitlab")];
   return SourceControlProviderRegistry.makeWithProviders(
-    PROVIDERS.map((provider) => ({
+    (input.providers ?? PROVIDERS).map((provider) => ({
       kind: provider.kind,
       provider,
       discovery: discovery.find((spec) => spec.kind === provider.kind) ?? {
@@ -148,7 +151,11 @@ function makeRegistry(input: {
         }),
         input.settings
           ? Layer.mock(ServerSettings.ServerSettingsService)(input.settings)
-          : ServerSettings.ServerSettingsService.layerTest(),
+          : ServerSettings.ServerSettingsService.layerTest(
+              input.accountRules === undefined
+                ? {}
+                : { sourceControlAccountOverrides: input.accountRules },
+            ),
         ServerConfig.layerTest(process.cwd(), {
           prefix: "t3-source-control-registry-test-",
         }).pipe(Layer.provide(NodeServices.layer)),
@@ -438,5 +445,55 @@ it.effect("asks again once Settings change", () =>
     yield* PubSub.publish(changes, DEFAULT_SERVER_SETTINGS);
     yield* Deferred.await(handled);
     assert.strictEqual((yield* resolveUnknown(registry, "c")).provider.kind, "github");
+  }),
+);
+
+/** Providers whose default branch is the login the operation was selected to act as. */
+const ACCOUNT_ECHOING_PROVIDERS = PROVIDERS.map((provider) => ({
+  ...provider,
+  getDefaultBranch: () =>
+    Effect.map(SelectedSourceControlAccount, (selection) =>
+      selection === null ? null : `${selection.host}:${selection.login}`,
+    ),
+}));
+
+it.effect("runs a checkout's operations as the account its rule names", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry({
+      remotes: [{ name: "origin", url: "git@github.com:Acme/firmware.git" }],
+      accountRules: { "github.com/acme/*": "acme-bot", "github.com/other/*": "someone" },
+      providers: ACCOUNT_ECHOING_PROVIDERS,
+    });
+    const handle = yield* registry.resolveHandle({ cwd: "/repo" });
+    assert.strictEqual(
+      yield* handle.provider.getDefaultBranch({ cwd: "/repo" }),
+      "github.com:acme-bot",
+    );
+  }),
+);
+
+it.effect("leaves a checkout no rule covers on the host's own account", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry({
+      remotes: [{ name: "origin", url: "git@github.com:me/site.git" }],
+      accountRules: { "github.com/acme/*": "acme-bot" },
+      providers: ACCOUNT_ECHOING_PROVIDERS,
+    });
+    const handle = yield* registry.resolveHandle({ cwd: "/repo" });
+    assert.strictEqual(yield* handle.provider.getDefaultBranch({ cwd: "/repo" }), null);
+  }),
+);
+
+it.effect("fails a rule for a host that cannot select an account instead of ignoring it", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry({
+      remotes: [{ name: "origin", url: "git@gitlab.com:acme/firmware.git" }],
+      accountRules: { "gitlab.com/acme/*": "acme-bot" },
+      providers: ACCOUNT_ECHOING_PROVIDERS,
+    });
+    const handle = yield* registry.resolveHandle({ cwd: "/repo" });
+    const error = yield* Effect.flip(handle.provider.getDefaultBranch({ cwd: "/repo" }));
+    assert.strictEqual(error.operation, "selectAccount");
+    assert.include(error.detail, "gitlab.com/acme/*");
   }),
 );

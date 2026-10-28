@@ -4,7 +4,10 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { HttpServerResponse } from "effect/http";
 
+import { withSourceControlAccount } from "@t3tools/source-control-core/server/SourceControlAccount";
+
 import * as BuiltInDrivers from "../sourceControl/builtInDrivers.ts";
+import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 
 const FORWARDED_REQUEST_HEADERS = ["range", "if-range"] as const;
@@ -46,7 +49,16 @@ export const sourceControlMediaResponse = Effect.fn(
     const value = requestHeaders[name];
     if (value !== undefined) forwarded[name] = value;
   }
-  const response = yield* fetchMedia({ url: asset.url, headers: forwarded });
+  // Fetched as the checkout's account rule names, so a private repository's media loads with the
+  // account that can see it. A rule the host cannot honor is reported where the page is read.
+  const account = yield* SourceControlProviderRegistry.SourceControlProviderRegistry.pipe(
+    Effect.flatMap((registry) => registry.resolveHandle({ cwd: asset.cwd })),
+    Effect.flatMap((handle) => handle.account),
+    Effect.orElseSucceed(() => null),
+  );
+  const response = yield* fetchMedia({ url: asset.url, headers: forwarded }).pipe(
+    withSourceControlAccount(account),
+  );
   if (response === null) return HttpServerResponse.empty({ status: 502, headers });
   // It carries none of the upstream entity headers: a `content-length` with no body behind it
   // holds the connection open until the browser gives up on it.

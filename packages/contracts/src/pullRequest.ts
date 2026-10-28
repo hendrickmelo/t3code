@@ -319,6 +319,11 @@ export const PullRequestListEntry = Schema.Struct({
   host: TrimmedNonEmptyString,
   projectId: ProjectId,
   projectTitle: TrimmedNonEmptyString,
+  /**
+   * The login the row was read as, which an account rule can make differ between repositories on
+   * one host; `viewers` holds only one per host. Optional so an older server's rows still decode.
+   */
+  viewer: Schema.optional(TrimmedNonEmptyString),
   repository: TrimmedNonEmptyString,
   number: PositiveInt,
   title: TrimmedNonEmptyString,
