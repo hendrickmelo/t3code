@@ -119,6 +119,21 @@ sent to `git.cafe`; `CAFE_TOKEN` follows `CAFE_HOST` if you set it. Repositories
 Line comments are not available for GitCafe pull requests yet.
 Merging a stack lands it through GitCafe, and updating a branch restacks the layers above it.
 
+### Use a different account per repository
+
+When you are signed in to several GitHub accounts, or several `tea` logins on one Forgejo or
+Gitea server, you can choose which one each repository uses. Open **Settings → Source control**
+and add a rule under **Accounts**. A rule pairs a pattern, such as `github.com/acme/*` for every
+repository of one owner or `github.com/acme/api` for one repository, with a signed-in login.
+`*` stands for any part of `host/owner/repository`, and the most specific rule wins.
+
+A matching rule replaces the host's account choice for that repository: pull requests, the Git
+panel, and media in pull request descriptions all act as that login. Repositories no rule covers
+keep using the host's account. On GitHub, a token saved in Settings or `GH_TOKEN` still takes
+precedence, and a rule whose login is signed out makes that repository's actions fail rather than
+run as another account. GitLab, Bitbucket, and Azure DevOps read one credential from the server, so a
+rule for one of their repositories makes its actions fail until you remove it.
+
 ## Start, clone, or publish a project
 
 To start from nothing, choose **New project** in the command palette (`Cmd/Ctrl+K`), or
