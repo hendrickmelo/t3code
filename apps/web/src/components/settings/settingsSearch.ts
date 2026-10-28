@@ -958,6 +958,15 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   ...sourceControlHostSearchItems(sourceControlClients.definitions),
   {
+    id: "source-control-account-rules",
+    title: "Account rules",
+    to: "/settings/source-control",
+    searchTerms: [
+      "github forgejo account login multiple accounts organization repository owner wildcard which account",
+    ],
+    environmentOnly: true,
+  },
+  {
     id: "source-control-writing-style",
     title: "Source control writing style",
     to: "/settings/source-control",

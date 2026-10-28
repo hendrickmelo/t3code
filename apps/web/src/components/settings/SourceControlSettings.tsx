@@ -31,6 +31,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 import { GitIcon, JujutsuIcon, type Icon } from "../Icons";
 import { SourceControlHostSettings } from "./SourceControlHostSettings";
+import { SourceControlAccountRules } from "./SourceControlAccountRules";
 import { SourceControlAccountSettings } from "./SourceControlAccountSettings";
 import { SourceControlAppSignInSettings } from "./SourceControlAppSignInSettings";
 import { SourceControlTokenSettings } from "./SourceControlTokenSettings";
@@ -521,6 +522,14 @@ export function SourceControlSettingsPanel() {
         />
       )}
 
+      {environmentId !== null && result.sourceControlProviders.length > 0 ? (
+        <SourceControlAccountRules
+          key={environmentId}
+          environmentId={environmentId}
+          discovery={result}
+          onSaved={handleScan}
+        />
+      ) : null}
       <SourceControlWritingSettingsSection />
     </SettingsPageContainer>
   );
