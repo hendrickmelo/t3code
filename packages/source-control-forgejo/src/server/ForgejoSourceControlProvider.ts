@@ -29,16 +29,33 @@ export const discovery = {
   parseAuth: (input) => {
     const logins = ForgejoCli.parseForgejoLogins(input.stdout);
     const login = logins.find((entry) => entry.default === "true") ?? logins[0];
-    return login
-      ? providerAuth({
-          status: login.valid === "true" ? "authenticated" : "unauthenticated",
-          account: login.user,
-          host: ForgejoCli.parseForgejoRemote(login.url)?.host,
-        })
-      : providerAuth({
-          status: "unauthenticated",
-          detail: "Run `tea login add` to authenticate a Forgejo or Gitea server.",
-        });
+    if (login === undefined) {
+      return providerAuth({
+        status: "unauthenticated",
+        detail: "Run `tea login add` to authenticate a Forgejo or Gitea server.",
+      });
+    }
+    const auth = providerAuth({
+      status: login.valid === "true" ? "authenticated" : "unauthenticated",
+      account: login.user,
+      host: ForgejoCli.parseForgejoRemote(login.url)?.host,
+    });
+    // Every tea login, which an account rule picks from. Only beside a valid default: listed
+    // under a signed-out one, clients read the logins as hosts turned off.
+    const accounts = logins.flatMap((entry) => {
+      const host = ForgejoCli.parseForgejoRemote(entry.url)?.host;
+      return host === undefined || entry.user.trim() === ""
+        ? []
+        : [
+            {
+              host,
+              account: entry.user,
+              active: entry.default === "true",
+              authenticated: entry.valid === "true",
+            },
+          ];
+    });
+    return auth.status === "authenticated" && accounts.length > 0 ? { ...auth, accounts } : auth;
   },
   refineUnknownRemote: (input) => {
     const remote = ForgejoCli.parseForgejoRemote(input.context.remoteUrl);

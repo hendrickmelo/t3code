@@ -132,6 +132,26 @@ describe("GitHubCredentials", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("uses a repository rule's account over the host's choice, without falling back", () => {
+    const { layer, calls } = harness({ "github.com": { account: "personal" } }, ["gone"]);
+    return Effect.gen(function* () {
+      const credentials = yield* GitHubCredentials.GitHubCredentials;
+      expect(Redacted.value((yield* credentials.get("github.com", "work")).token)).toBe(
+        "token-for-work",
+      );
+      expect(Redacted.value((yield* credentials.get("github.com")).token)).toBe(
+        "token-for-personal",
+      );
+      const error = yield* Effect.flip(credentials.get("github.com", "gone"));
+      expect(error._tag).toBe("GitHubNotSignedInError");
+      expect(calls).toEqual([
+        ["auth", "token", "--hostname", "github.com", "--user", "work"],
+        ["auth", "token", "--hostname", "github.com", "--user", "personal"],
+        ["auth", "token", "--hostname", "github.com", "--user", "gone"],
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("uses a token saved in Settings before GH_TOKEN and gh", () => {
     vi.stubEnv("GH_TOKEN", "env-token");
     const { layer, calls } = harness({}, [], { "github.com": "saved-token" });

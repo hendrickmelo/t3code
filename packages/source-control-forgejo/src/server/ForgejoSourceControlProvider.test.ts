@@ -984,6 +984,35 @@ it.effect(
   },
 );
 
+it.effect("lists every tea login so an account rule can name one", () =>
+  Effect.gen(function* () {
+    const auth = ForgejoSourceControlProvider.discovery.parseAuth(
+      processOutput(
+        yield* encodeJsonEffect([
+          {
+            name: "home",
+            url: "https://codeberg.org",
+            user: "maria",
+            default: "true",
+            valid: "true",
+          },
+          {
+            name: "work",
+            url: "https://codeberg.org",
+            user: "maria-acme",
+            default: "false",
+            valid: "false",
+          },
+        ]),
+      ),
+    );
+    assert.deepStrictEqual(auth.accounts, [
+      { host: "codeberg.org", account: "maria", active: true, authenticated: true },
+      { host: "codeberg.org", account: "maria-acme", active: false, authenticated: false },
+    ]);
+  }),
+);
+
 it.effect("discovers Forgejo accounts and retains the server port", () =>
   Effect.gen(function* () {
     const auth = ForgejoSourceControlProvider.discovery.parseAuth(
@@ -1049,6 +1078,29 @@ it.effect("discovers Forgejo accounts and retains the server port", () =>
       name: "Forgejo / Gitea",
       baseUrl: "http://forgejo.local:3000",
     });
+  }),
+);
+
+it.effect("lets an account rule choose between tea logins for one server", () =>
+  Effect.gen(function* () {
+    const logins = ForgejoCli.parseForgejoLogins(
+      yield* encodeJsonEffect([
+        { name: "personal", url: "https://codeberg.org", user: "maria", default: "true" },
+        { name: "work", url: "https://codeberg.org", user: "maria-acme", default: "false" },
+      ]),
+    );
+    const remote = ForgejoCli.parseForgejoRemote("https://codeberg.org/acme/site.git")!;
+    assert.strictEqual(ForgejoCli.matchForgejoLogin(logins, remote)?.name, "personal");
+    for (const rule of ["work", "maria-acme"]) {
+      assert.strictEqual(
+        ForgejoCli.matchForgejoLogin(logins, remote, undefined, false, rule)?.name,
+        "work",
+      );
+    }
+    assert.strictEqual(
+      ForgejoCli.matchForgejoLogin(logins, remote, undefined, false, "nobody")?.name,
+      "personal",
+    );
   }),
 );
 

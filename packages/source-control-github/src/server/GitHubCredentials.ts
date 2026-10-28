@@ -86,8 +86,13 @@ export type GitHubCredentialUnavailableError =
 export class GitHubCredentials extends Context.Service<
   GitHubCredentials,
   {
+    /**
+     * `ruleAccount` is a repository's account rule, which replaces the host's account choice and,
+     * unlike it, never falls back to the active login.
+     */
     readonly get: (
       host: string,
+      ruleAccount?: string,
     ) => Effect.Effect<GitHubCredential, GitHubCredentialUnavailableError>;
     /** The token saved in Settings for `host`, which outranks every other source. */
     readonly saved: (
@@ -97,7 +102,7 @@ export class GitHubCredentials extends Context.Service<
       GitHubHostDisabledError | GitHubNotSignedInError
     >;
     readonly fingerprint: (host: string, token: string) => Effect.Effect<string>;
-    readonly invalidate: (host: string) => Effect.Effect<void>;
+    readonly invalidate: (host: string, ruleAccount?: string) => Effect.Effect<void>;
   }
 >()("@t3tools/source-control-github/server/GitHubCredentials") {}
 
@@ -199,18 +204,22 @@ export const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => null),
     );
 
-  const cacheKey = (host: string, account: string | undefined) =>
-    account === undefined ? host : `${host}\u0000${account}`;
+  // A rule's account is keyed apart from a host choice of the same login: only the choice may
+  // fall back to the active login.
+  const cacheKey = (host: string, account: string | undefined, rule = false) =>
+    account === undefined ? host : `${host}\u0000${account}${rule ? "\u0000rule" : ""}`;
 
   const lookup = Effect.fn("GitHubCredentials.lookup")(function* (key: string) {
-    const [host = key, choice] = key.split("\u0000");
+    const [host = key, choice, rule] = key.split("\u0000");
     const fromEnv = environmentToken(host, environment);
     const token =
       fromEnv ??
       (yield* fromGh(host, choice).pipe(
         Effect.catchTags({
           GitHubNotSignedInError: (error) =>
-            choice === undefined ? Effect.fail(error) : fromGh(host, undefined),
+            choice === undefined || rule !== undefined
+              ? Effect.fail(error)
+              : fromGh(host, undefined),
         }),
       ));
     return {
@@ -250,16 +259,23 @@ export const make = Effect.gen(function* () {
   });
 
   return GitHubCredentials.of({
-    get: Effect.fn("GitHubCredentials.get")(function* (rawHost) {
+    get: Effect.fn("GitHubCredentials.get")(function* (rawHost, ruleAccount) {
       const host = normalizeHost(rawHost);
       const fromSettings = yield* saved(host);
       if (Option.isSome(fromSettings)) return fromSettings.value;
-      return yield* Cache.get(cache, cacheKey(host, (yield* hostChoice(host))?.account));
+      return yield* Cache.get(
+        cache,
+        ruleAccount === undefined
+          ? cacheKey(host, (yield* hostChoice(host))?.account)
+          : cacheKey(host, ruleAccount, true),
+      );
     }),
     saved,
     fingerprint: fingerprintOf,
-    invalidate: Effect.fn("GitHubCredentials.invalidate")(function (rawHost) {
+    invalidate: Effect.fn("GitHubCredentials.invalidate")(function (rawHost, ruleAccount) {
       const host = normalizeHost(rawHost);
+      if (ruleAccount !== undefined)
+        return Cache.invalidate(cache, cacheKey(host, ruleAccount, true));
       return hostChoice(host).pipe(
         Effect.flatMap((choice) => Cache.invalidate(cache, cacheKey(host, choice?.account))),
       );

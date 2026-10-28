@@ -56,6 +56,7 @@ export type GitHubSettings = typeof settings.Type;
 
 export const definition = defineSourceControl({
   kind: KIND,
+  selectsAccountPerRepository: true,
   label: "GitHub",
   pickerLabel: "GitHub",
   icon,

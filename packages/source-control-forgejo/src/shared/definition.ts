@@ -53,6 +53,7 @@ function changeRequestHost(identity: ChangeRequestHostIdentity): string {
 
 export const definition = defineSourceControl({
   kind: KIND,
+  selectsAccountPerRepository: true,
   label: "Forgejo",
   pickerLabel: "Forgejo / Gitea",
   icon,

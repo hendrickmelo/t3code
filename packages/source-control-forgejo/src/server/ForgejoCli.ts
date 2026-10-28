@@ -12,6 +12,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 import { decodeJsonResult } from "@t3tools/shared/schemaJson";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { SelectedSourceControlAccount } from "@t3tools/source-control-core/server/SourceControlAccount";
 import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 import { collectUint8StreamText } from "@t3tools/provider-core/server/collectStreamText";
 import type { SourceControlProviderContext } from "@t3tools/source-control-core/server/SourceControlProvider";
@@ -176,11 +177,17 @@ export function parseForgejoRemote(value: string) {
     : null;
 }
 
+/** An account rule names a login by its tea alias or by the user it signs in as. */
+function isRuleLogin(login: typeof ForgejoLoginSchema.Type, ruleLogin: string) {
+  return login.name === ruleLogin || login.user === ruleLogin;
+}
+
 export function matchForgejoLogin(
   logins: ReturnType<typeof parseForgejoLogins>,
   remote: NonNullable<ReturnType<typeof parseForgejoRemote>>,
   requestedHost?: string,
   hostOnly = false,
+  ruleLogin?: string,
 ) {
   const matches = [
     ...new Map(
@@ -202,11 +209,15 @@ export function matchForgejoLogin(
         .map((login) => [login.name, login]),
     ).values(),
   ];
-  return matches.length === 1
-    ? matches[0]
-    : new Set(matches.map((login) => login.url)).size === 1
-      ? matches.find((login) => login.default === "true")
-      : undefined;
+  if (matches.length === 1) return matches[0];
+  // Several logins for one server: the repository's account rule decides before tea's default,
+  // which is global.
+  const ruled =
+    ruleLogin === undefined ? undefined : matches.find((login) => isRuleLogin(login, ruleLogin));
+  if (ruled !== undefined) return ruled;
+  return new Set(matches.map((login) => login.url)).size === 1
+    ? matches.find((login) => login.default === "true")
+    : undefined;
 }
 
 export const make = Effect.gen(function* () {
@@ -557,10 +568,20 @@ export const make = Effect.gen(function* () {
     });
     const requestedHost = input.host ?? input.context?.requestedHost;
     const matchHostOnly = hostOnly || (!!input.host && !remote?.path);
+    const ruleLogin = (yield* SelectedSourceControlAccount)?.login;
     const selectLogin = (logins: ReturnType<typeof parseForgejoLogins>) =>
       remote
-        ? matchForgejoLogin(logins, remote, remote.ssh ? requestedHost : undefined, matchHostOnly)
-        : (logins.find((item) => item.default === "true") ??
+        ? matchForgejoLogin(
+            logins,
+            remote,
+            remote.ssh ? requestedHost : undefined,
+            matchHostOnly,
+            ruleLogin,
+          )
+        : ((ruleLogin === undefined
+            ? undefined
+            : logins.find((item) => isRuleLogin(item, ruleLogin))) ??
+          logins.find((item) => item.default === "true") ??
           (new Set(logins.map((item) => item.name)).size === 1 ? logins[0] : undefined));
     let login = selectLogin(fjLogins);
     let command: "fj" | "tea" = "fj";
@@ -569,7 +590,13 @@ export const make = Effect.gen(function* () {
       fjLogins.some(
         (item) =>
           !remote ||
-          matchForgejoLogin([item], remote, remote.ssh ? requestedHost : undefined, matchHostOnly),
+          matchForgejoLogin(
+            [item],
+            remote,
+            remote.ssh ? requestedHost : undefined,
+            matchHostOnly,
+            ruleLogin,
+          ),
       )
     ) {
       const available = yield* execute({ command: "fj", cwd: input.cwd, args: ["version"] }).pipe(

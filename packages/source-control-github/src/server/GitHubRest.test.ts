@@ -17,6 +17,7 @@ import * as SourceControlRateLimit from "@t3tools/source-control-core/server/Sou
 import type * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 import * as TestSourceControlHost from "@t3tools/source-control-testing/TestSourceControlHost";
 import * as GitHubAppSignIn from "./GitHubAppSignIn.ts";
+import * as SourceControlAccount from "@t3tools/source-control-core/server/SourceControlAccount";
 
 const appSignedOut = Layer.mock(GitHubAppSignIn.GitHubAppSignIn)({
   enabled: false,
@@ -26,7 +27,10 @@ const appSignedOut = Layer.mock(GitHubAppSignIn.GitHubAppSignIn)({
 
 const NOW = Date.parse("2026-10-05T12:00:00.000Z");
 
-function harness(respond: (request: HttpClientRequest.HttpClientRequest) => Response) {
+function harness(
+  respond: (request: HttpClientRequest.HttpClientRequest) => Response,
+  appSignIn: Layer.Layer<GitHubAppSignIn.GitHubAppSignIn> = appSignedOut,
+) {
   const requests: Array<HttpClientRequest.HttpClientRequest> = [];
   let tokens = ["first", "second"];
   let invalidations = 0;
@@ -34,12 +38,12 @@ function harness(respond: (request: HttpClientRequest.HttpClientRequest) => Resp
   const credentials = Layer.succeed(
     GitHubCredentials.GitHubCredentials,
     GitHubCredentials.GitHubCredentials.of({
-      get: (host) =>
+      get: (host, ruleAccount) =>
         Effect.sync(() => {
           credentialReads++;
           return {
             host,
-            token: Redacted.make(tokens[0]!),
+            token: Redacted.make(ruleAccount === undefined ? tokens[0]! : `as-${ruleAccount}`),
             source: "gh" as const,
             fingerprint: `${host}:${tokens[0]}`,
           };
@@ -61,7 +65,7 @@ function harness(respond: (request: HttpClientRequest.HttpClientRequest) => Resp
     }),
   );
   const layer = GitHubRest.layer.pipe(
-    Layer.provide(Layer.mergeAll(credentials, http, appSignedOut)),
+    Layer.provide(Layer.mergeAll(credentials, http, appSignIn)),
     Layer.provideMerge(GitHubQuota.layer),
     Layer.provideMerge(SourceControlRateLimit.layer),
   );
@@ -216,6 +220,26 @@ describe("GitHubRest", () => {
       expect(requests.map((request) => request.headers.authorization)).toEqual([
         "Bearer first",
         "Bearer second",
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("sends a repository's account rule login instead of the app session", () => {
+    const appSignedIn = Layer.mock(GitHubAppSignIn.GitHubAppSignIn)({
+      enabled: true,
+      token: () => Effect.succeedSome("app"),
+      invalidate: () => Effect.void,
+    });
+    const { layer, requests } = harness(() => json({}), appSignedIn);
+    return Effect.gen(function* () {
+      const api = yield* GitHubRest.GitHubRest;
+      yield* api.rest({ host: "github.com", operation: "user", path: "user" });
+      yield* api
+        .rest({ host: "github.com", operation: "user", path: "user" })
+        .pipe(SourceControlAccount.withSourceControlAccount({ host: "github.com", login: "work" }));
+      expect(requests.map((request) => request.headers.authorization)).toEqual([
+        "Bearer app",
+        "Bearer as-work",
       ]);
     }).pipe(Effect.provide(layer));
   });

@@ -1,4 +1,5 @@
 import type { SourceControlMediaRequest } from "@t3tools/source-control-core/server/driver";
+import * as SourceControlAccount from "@t3tools/source-control-core/server/SourceControlAccount";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import {
@@ -33,8 +34,9 @@ export const make = Effect.gen(function* () {
   const httpClient = HttpClient.withScope(yield* HttpClient.HttpClient);
 
   // Both media hosts are served by github.com's account, which is the host `gh` stores it under.
-  // Read on every fetch, so media loads as soon as the user signs in.
-  const token = Effect.suspend(() => credentials.get("github.com")).pipe(
+  // Read on every fetch, so media loads as soon as the user signs in, as the repository's rule.
+  const token = SourceControlAccount.selectedLoginFor("github.com").pipe(
+    Effect.flatMap((ruleAccount) => credentials.get("github.com", ruleAccount)),
     Effect.map((credential) => credential.token),
     Effect.orElseSucceed(() => null),
   );

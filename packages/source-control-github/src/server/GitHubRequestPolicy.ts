@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as SourceControlAccount from "@t3tools/source-control-core/server/SourceControlAccount";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 
 import * as Option from "effect/Option";
@@ -250,8 +251,8 @@ export const make = Effect.gen(function* () {
   const limits = yield* SourceControlRateLimit.SourceControlRateLimit;
   const slots = yield* Semaphore.make(CONCURRENCY);
 
-  const personalCredential = (host: string) =>
-    credentials.get(host).pipe(
+  const personalCredential = (host: string, ruleAccount: string | undefined) =>
+    credentials.get(host, ruleAccount).pipe(
       Effect.map((held): ChosenCredential => ({
         token: held.token,
         fingerprint: held.fingerprint,
@@ -286,13 +287,15 @@ export const make = Effect.gen(function* () {
     if (Option.isSome(saved)) {
       return { token: saved.value.token, fingerprint: saved.value.fingerprint, fromApp: false };
     }
-    if (personal) return yield* personalCredential(host);
+    // A repository's account rule names a login, which the app session cannot act as.
+    const ruleAccount = yield* SourceControlAccount.selectedLoginFor(host);
+    if (personal || ruleAccount !== undefined) return yield* personalCredential(host, ruleAccount);
     const app = yield* Effect.result(appCredential(host));
     // An app session that cannot refresh right now steps aside for the user's own credential.
     if (Result.isFailure(app)) {
-      return yield* personalCredential(host).pipe(Effect.mapError(() => app.failure));
+      return yield* personalCredential(host, undefined).pipe(Effect.mapError(() => app.failure));
     }
-    if (Option.isNone(app.success)) return yield* personalCredential(host);
+    if (Option.isNone(app.success)) return yield* personalCredential(host, undefined);
     return { ...app.success.value, fromApp: true } satisfies ChosenCredential;
   });
 
@@ -347,7 +350,7 @@ export const make = Effect.gen(function* () {
         case "Unauthorized":
           // The source may hold a newer token than the one that was refused.
           yield* appSignIn.invalidate(host, Redacted.value(token));
-          yield* credentials.invalidate(host);
+          yield* credentials.invalidate(host, yield* SourceControlAccount.selectedLoginFor(host));
           return yield* new GitHubApiAuthenticationError(context);
         case "NotFound":
           return yield* new GitHubApiNotFoundError(context);
@@ -393,7 +396,7 @@ export const make = Effect.gen(function* () {
               }),
             );
             if (held.fromApp && refusedToApp(answer)) {
-              const personal = yield* Effect.option(personalCredential(host));
+              const personal = yield* Effect.option(personalCredential(host, undefined));
               if (Option.isSome(personal)) {
                 yield* quota.observe(host, answer.headers);
                 yield* limits.recordSuccess({ ...key, lease });
