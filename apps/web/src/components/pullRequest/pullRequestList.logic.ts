@@ -205,7 +205,8 @@ export function pullRequestEntryViewer(
   entry: ScopedEntry,
   viewers: PullRequestViewers,
 ): string | null {
-  return normalize(viewers[pullRequestViewerKey(entry)] ?? viewers[entry.host]);
+  // A row's own viewer wins: an account rule can read one repository as another login.
+  return normalize(entry.viewer ?? viewers[pullRequestViewerKey(entry)] ?? viewers[entry.host]);
 }
 
 function isAuthoredByViewer(entry: ScopedEntry, viewers: PullRequestViewers): boolean {

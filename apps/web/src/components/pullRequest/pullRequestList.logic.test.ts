@@ -154,6 +154,25 @@ describe("pull request involvement filtering", () => {
       filterPullRequestsByInvolvement(mixed, VIEWERS, "authored").map((item) => item.number),
     ).toEqual([1]);
   });
+
+  it("judges a row read as an account rule's login by that login, not the host's", () => {
+    const rows = [
+      entry({
+        number: 1,
+        viewer: "acme-bot",
+        author: { login: "acme-bot", name: null, avatarUrl: null },
+      }),
+      entry({
+        number: 2,
+        viewer: "acme-bot",
+        author: { login: "Bilal", name: null, avatarUrl: null },
+      }),
+      entry({ number: 3, author: { login: "Bilal", name: null, avatarUrl: null } }),
+    ];
+    expect(
+      filterPullRequestsByInvolvement(rows, VIEWERS, "authored").map((item) => item.number),
+    ).toEqual([1, 3]);
+  });
 });
 
 describe("ranking what a search found", () => {
