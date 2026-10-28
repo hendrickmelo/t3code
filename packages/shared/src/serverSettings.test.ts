@@ -94,6 +94,15 @@ describe("serverSettings helpers", () => {
       tokens: {},
     });
   });
+  it("replaces account rules whole so a renamed pattern stops matching", () => {
+    const before = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      sourceControlAccountOverrides: { "github.com/acme/*": "work", "github.com/me/*": "personal" },
+    });
+    const renamed = applyServerSettingsPatch(before, {
+      sourceControlAccountOverrides: { "github.com/acme/api": "work" },
+    });
+    expect(renamed.sourceControlAccountOverrides).toEqual({ "github.com/acme/api": "work" });
+  });
 
   it("inherits actions, preserves existing actions, and supports empty overrides and reset", () => {
     const project = { id: ProjectId.make("project-actions"), scripts: [] };

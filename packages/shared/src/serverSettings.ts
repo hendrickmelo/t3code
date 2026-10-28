@@ -356,6 +356,8 @@ export function applyServerSettingsPatch(
     // Merged per entry below; its `null` removals must not reach deepMerge.
     usageLimitSources: usageLimitSourcesPatch,
     sourceControlHosts: sourceControlHostsPatch,
+    // Replaced whole: a merge would keep a rule's old pattern pinning after it was renamed.
+    sourceControlAccountOverrides: sourceControlAccountOverridesPatch,
     usagePriceOverrides: usagePriceOverridesPatch,
     usageModelAliases: usageModelAliasesPatch,
     // Entry replacement: deepMerge would keep keys the client meant to clear.
@@ -522,6 +524,9 @@ export function applyServerSettingsPatch(
             ),
           },
         }
+      : {}),
+    ...(sourceControlAccountOverridesPatch !== undefined
+      ? { sourceControlAccountOverrides: sourceControlAccountOverridesPatch }
       : {}),
     ...(projectSettingsOverridesPatch !== undefined
       ? {

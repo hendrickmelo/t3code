@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./shared/accountRules": {
+      "types": "./src/shared/accountRules.ts",
+      "import": "./src/shared/accountRules.ts"
+    },
     "./shared/definition": {
       "types": "./src/shared/definition.ts",
       "import": "./src/shared/definition.ts"
@@ -38,6 +42,10 @@
     "./server/PullRequestProvider": {
       "types": "./src/server/PullRequestProvider.ts",
       "import": "./src/server/PullRequestProvider.ts"
+    },
+    "./server/SourceControlAccount": {
+      "types": "./src/server/SourceControlAccount.ts",
+      "import": "./src/server/SourceControlAccount.ts"
     },
     "./server/SourceControlHost": {
       "types": "./src/server/SourceControlHost.ts",

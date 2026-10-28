@@ -230,6 +230,11 @@ export interface SourceControlDefinition {
   /** Further words settings search finds this host by, besides its label. */
   readonly searchKeywords?: ReadonlyArray<string>;
   readonly credentials?: SourceControlHostCredentials;
+  /**
+   * The server can act as a named login per repository, which `sourceControlAccountOverrides`
+   * rules need. Absent for a host whose tools read one credential from the environment.
+   */
+  readonly selectsAccountPerRepository?: true;
   readonly changeRequest: ChangeRequestTerminology;
   readonly repositoryPathHint: string;
   readonly publicHost: string | null;

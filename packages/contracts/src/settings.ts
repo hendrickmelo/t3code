@@ -1296,6 +1296,14 @@ export const ServerSettings = Schema.Struct({
   sourceControlHosts: Schema.Record(Schema.String, SourceControlHostSettings).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  /**
+   * Account login per repository pattern, as `host/owner/repo`. `*` stands for one path segment
+   * and a trailing `*` for the rest, so `host/owner/*` covers an owner; the most specific
+   * pattern wins. A match replaces the host's account choice for that repository.
+   */
+  sourceControlAccountOverrides: Schema.Record(TrimmedNonEmptyString, TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
   // User-chosen ids preserve rows across edits; undecodable entries round-trip untouched.
   usageLimitSources: Schema.Record(UsageLimitSourceId, UsageLimitSourceConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
@@ -1604,6 +1612,10 @@ export const ServerSettingsPatch = Schema.Struct({
   ),
   /** Merges per host, replacing patched fields whole; redaction markers retain secrets, empty or omitted secrets remove them. */
   sourceControlHosts: Schema.optionalKey(Schema.Record(Schema.String, SourceControlHostSettings)),
+  // Replaced whole: a rule is edited by rewriting its pattern, which a per-key merge cannot express.
+  sourceControlAccountOverrides: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, TrimmedNonEmptyString),
+  ),
   // Replace whole maps to avoid half-merged driver configs.
   providerInstances: Schema.optionalKey(Schema.Record(ProviderInstanceId, ProviderInstanceConfig)),
   // Merge per source to avoid racing other edits; null removes an entry.

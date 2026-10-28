@@ -23,6 +23,8 @@ export {
   type SourceControlIcon,
 } from "@t3tools/source-control-core/shared/definition";
 
+export { matchSourceControlAccountRule } from "@t3tools/source-control-core/shared/accountRules";
+
 export const sourceControlClients = builtInSourceControlDefinitions;
 
 /** The saved per-hostname accounts and tokens of a host whose definition has `credentials`. */
